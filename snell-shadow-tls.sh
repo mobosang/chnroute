@@ -85,6 +85,12 @@ sudo systemctl daemon-reload
 sudo systemctl start shadow-tls.service
 
 
+# 获取本机公网IP地址
+PUBLIC_IP=$(curl -s ifconfig.me)
+
+# 提示用户输入代理节点名称
+read -p "Enter the agent name: " AGENT_NAME
+
 # 调整 kernel 网络性能,并开启 BBR
 echo "Network tuning..."
 cat <<EOF >> /etc/sysctl.conf
@@ -100,4 +106,4 @@ EOF
 sysctl -p
 
 # 输出PSK
-echo "agent_nane = snell, YouVpsIPAddress, 56139, psk=$PSK1, version=4, tfo=true, shadow-tls-password=$PSK2, shadow-tls-sni=quark.cn, shadow-tls-version=3"
+echo "$AGENT_NAME = snell, $PUBLIC_IP, 56139, psk=$PSK1, version=4, tfo=true, shadow-tls-password=$PSK2, shadow-tls-sni=quark.cn, shadow-tls-version=3"
