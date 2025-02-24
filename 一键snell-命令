@@ -1,5 +1,4 @@
 #一键snell
 wget https://raw.githubusercontent.com/mobosang/chnroute/refs/heads/main/snell-shadow-tls.sh
-
 chmod +x snell-shadow-tls.sh
 sudo ./snell-shadow-tls.sh
