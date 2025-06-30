@@ -17,7 +17,7 @@
 
 # --- 全局变量和常量 ---
 SCRIPT_VERSION="2.5.7-custom"
-SNELL_VERSION="v4.1.1"
+SNELL_VERSION="v5.0.0b1"
 SHADOW_TLS_VERSION="v0.2.25"
 
 # --- 文件路径 ---
