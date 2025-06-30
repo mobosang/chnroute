@@ -94,12 +94,12 @@ read -p "Enter the agent name: " AGENT_NAME
 # 调整 kernel 网络性能,并开启 BBR
 echo "Network tuning..."
 cat <<EOF >> /etc/sysctl.conf
-net.core.rmem_default = 262144
-net.core.rmem_max = 6291456
-net.core.wmem_default = 262144
-net.core.wmem_max = 4194304
+# 开启 BBR 和 FQ
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
+# 开启 TCP Fast Open，可以降低建立 TCP 连接时的延迟
+net.ipv4.tcp_fastopen = 3
+# 建议开启 ECN，有助于网络拥塞控制
 net.ipv4.tcp_ecn = 1
 EOF
 
