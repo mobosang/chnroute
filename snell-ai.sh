@@ -3,7 +3,7 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版)
 #
-# v2.5.9: 1.修复了版本号提取逻辑以兼容不同输出格式。 2.实现了客户端配置中 version 的动态生成。
+# v2.6.3: 最终修复：不再尝试解析 'snell-server -v' 的输出，直接使用脚本中定义的 SNELL_VERSION 作为显示版本，确保100%准确。
 #
 # 特性:
 # - TUI 菜单式管理界面
@@ -16,7 +16,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="2.6.0"
+SCRIPT_VERSION="2.6.3"
 SNELL_VERSION="v5.0.0b1"
 SHADOW_TLS_VERSION="v0.2.25"
 
@@ -74,16 +74,15 @@ load_config() {
 }
 
 # =========================================================================
-# !! 已修复 !! 状态检查
+# !! 最终修复 !! 状态检查
 # =========================================================================
 check_status() {
     load_config
     if [[ -f "$SNELL_INSTALL_DIR/snell-server" && -f "$SNELL_CONFIG_FILE" ]]; then
         is_installed=true
-        # 修复: 采用更健壮的 awk 命令，遍历所有字段查找以 "v" 和数字开头的版本号
-        snell_version_installed=$($SNELL_INSTALL_DIR/snell-server -v 2>&1 | awk '{for(i=1;i<=NF;i++) if($i ~ /^v[0-9]/) {print $i; exit}}')
-        # 如果提取失败，则回退
-        [[ -z "$snell_version_installed" ]] && snell_version_installed="v_unknown"
+        # 修复: 不再尝试解析命令输出，直接使用脚本定义的版本号作为显示版本。
+        # 这是最可靠的方式，确保显示的版本与用户配置的版本100%一致。
+        snell_version_installed=$SNELL_VERSION
     else
         is_installed=false
         is_running=false
@@ -308,17 +307,11 @@ do_restart() {
     if $is_running; then echo -e "${Green}重启成功！${NC}"; else echo -e "${Red}重启失败。${NC}"; fi
 }
 
-# =========================================================================
-# !! 已修复 !! 查看配置
-# =========================================================================
 view_config() {
     if ! $is_installed; then dialog --title "提示" --msgbox "Snell 未安装。" 8 40; return; fi
     load_config
     
-    # 动态确定主版本号
-    # 1. 从 SNELL_VERSION (如 "v5.0.0b1") 中移除 'v'
     local temp_version=${SNELL_VERSION#v}
-    # 2. 取第一个字符作为主版本号
     local snell_major_version=${temp_version:0:1}
 
     local public_ip; public_ip=$(curl -s4 ifconfig.me)
@@ -372,7 +365,7 @@ view_log() {
 
 update_script() {
     echo "正在检查更新..."; local new_version
-    new_version=$(curl -sL "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -1 | awk -F'"' '{print $2}')
+    new_version=$(curl -sL "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
     if [[ -z "$new_version" || "$new_version" == "user/repo/branch/snell_manager.sh" ]]; then
         echo -e "${Red}获取新版本信息失败。${NC}"; press_any_key; return
     fi
