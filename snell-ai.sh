@@ -4,6 +4,7 @@
 # Snell Server 全功能管理脚本 (定制版)
 #
 # v2.6.3: 最终修复：不再尝试解析 'snell-server -v' 的输出，直接使用脚本中定义的 SNELL_VERSION 作为显示版本，确保100%准确。
+# v2.6.4: 优化了脚本更新逻辑，仅当远程版本严格大于本地版本时才执行更新。
 #
 # 特性:
 # - TUI 菜单式管理界面
@@ -16,7 +17,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="2.6.3"
+SCRIPT_VERSION="2.6.4"
 SNELL_VERSION="v5.0.0b1"
 SHADOW_TLS_VERSION="v0.2.25"
 
@@ -73,15 +74,10 @@ load_config() {
     fi
 }
 
-# =========================================================================
-# !! 最终修复 !! 状态检查
-# =========================================================================
 check_status() {
     load_config
     if [[ -f "$SNELL_INSTALL_DIR/snell-server" && -f "$SNELL_CONFIG_FILE" ]]; then
         is_installed=true
-        # 修复: 不再尝试解析命令输出，直接使用脚本定义的版本号作为显示版本。
-        # 这是最可靠的方式，确保显示的版本与用户配置的版本100%一致。
         snell_version_installed=$SNELL_VERSION
     else
         is_installed=false
@@ -363,21 +359,40 @@ view_log() {
     fi
 }
 
+# =========================================================================
+# !! 已修复 !! 更新脚本
+# =========================================================================
 update_script() {
-    echo "正在检查更新..."; local new_version
-    new_version=$(curl -sL "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
-    if [[ -z "$new_version" || "$new_version" == "user/repo/branch/snell_manager.sh" ]]; then
-        echo -e "${Red}获取新版本信息失败。${NC}"; press_any_key; return
+    clear
+    echo "正在检查更新..."
+    
+    local local_version=$SCRIPT_VERSION
+    local remote_version
+    remote_version=$(curl -sL "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
+
+    if [[ -z "$remote_version" ]]; then
+        echo -e "${Red}获取远程版本信息失败，请检查网络或脚本URL。${NC}"
+        press_any_key
+        return
     fi
-    if [[ "$new_version" == "$SCRIPT_VERSION" ]]; then
-        echo -e "${Green}当前已是最新版本 (${SCRIPT_VERSION})！${NC}"
+
+    # 使用 sort -V 进行版本号比较
+    local latest_version
+    latest_version=$(printf "%s\n%s" "$local_version" "$remote_version" | sort -V | tail -n 1)
+
+    if [[ "$latest_version" == "$local_version" ]]; then
+        echo -e "${Green}恭喜！当前已是最新版本 (${local_version})。${NC}"
     else
-        echo -e "${Yellow}发现新版本: ${new_version}，正在更新...${NC}"
+        echo -e "${Yellow}发现新版本: ${remote_version}，正在更新...${NC}"
         local script_path="$0"
         if ! curl -sL "${SCRIPT_URL}" -o "${script_path}"; then
-            echo -e "${Red}下载新脚本失败！${NC}"; press_any_key; return
+            echo -e "${Red}下载新脚本失败！${NC}"
+            press_any_key
+            return
         fi
-        chmod +x "${script_path}"; echo -e "${Green}脚本已更新！正在重新运行...${NC}"; sleep 2
+        chmod +x "${script_path}"
+        echo -e "${Green}脚本已更新至 ${remote_version}！正在重新运行...${NC}"
+        sleep 2
         exec "${script_path}"
     fi
     press_any_key
