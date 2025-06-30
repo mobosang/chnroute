@@ -3,7 +3,7 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版)
 #
-# v2.5.7: 优化了日志查看功能，在 full 模式下可选择单独查看 snell 或 shadow-tls 的日志。
+# v2.5.9: 1.修复了版本号提取逻辑以兼容不同输出格式。 2.实现了客户端配置中 version 的动态生成。
 #
 # 特性:
 # - TUI 菜单式管理界面
@@ -16,7 +16,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="2.5.7-custom"
+SCRIPT_VERSION="2.5.9-custom"
 SNELL_VERSION="v5.0.0b1"
 SHADOW_TLS_VERSION="v0.2.25"
 
@@ -31,7 +31,7 @@ SCRIPT_CONFIG_FILE="${SNELL_CONFIG_DIR}/manager.conf"
 # --- 下载链接 ---
 SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-amd64.zip"
 SHADOW_TLS_URL="https://github.com/ihciah/shadow-tls/releases/download/${SHADOW_TLS_VERSION}/shadow-tls-x86_64-unknown-linux-musl"
-SCRIPT_URL="wget https://raw.githubusercontent.com/mobosang/chnroute/refs/heads/main/snell-ai.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-ai.sh"
 
 # --- 颜色定义 ---
 Green="\033[32m"
@@ -73,12 +73,17 @@ load_config() {
     fi
 }
 
+# =========================================================================
+# !! 已修复 !! 状态检查
+# =========================================================================
 check_status() {
     load_config
     if [[ -f "$SNELL_INSTALL_DIR/snell-server" && -f "$SNELL_CONFIG_FILE" ]]; then
         is_installed=true
-        snell_version_installed=$($SNELL_INSTALL_DIR/snell-server -v 2>/dev/null | awk '{print $3}')
-        [[ -z "$snell_version_installed" ]] && snell_version_installed="v4+"
+        # 修复: 采用更健壮的 awk 命令，遍历所有字段查找以 "v" 和数字开头的版本号
+        snell_version_installed=$($SNELL_INSTALL_DIR/snell-server -v 2>&1 | awk '{for(i=1;i<=NF;i++) if($i ~ /^v[0-9]/) {print $i; exit}}')
+        # 如果提取失败，则回退
+        [[ -z "$snell_version_installed" ]] && snell_version_installed="v_unknown"
     else
         is_installed=false
         is_running=false
@@ -303,15 +308,25 @@ do_restart() {
     if $is_running; then echo -e "${Green}重启成功！${NC}"; else echo -e "${Red}重启失败。${NC}"; fi
 }
 
+# =========================================================================
+# !! 已修复 !! 查看配置
+# =========================================================================
 view_config() {
     if ! $is_installed; then dialog --title "提示" --msgbox "Snell 未安装。" 8 40; return; fi
     load_config
+    
+    # 动态确定主版本号
+    # 1. 从 SNELL_VERSION (如 "v5.0.0b1") 中移除 'v'
+    local temp_version=${SNELL_VERSION#v}
+    # 2. 取第一个字符作为主版本号
+    local snell_major_version=${temp_version:0:1}
+
     local public_ip; public_ip=$(curl -s4 ifconfig.me)
     local final_config_string
     if [[ "$INSTALL_MODE" == "full" ]]; then
-        final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${PUBLIC_PORT}, psk=${SNELL_PSK}, version=5, reuse=true, tfo=true, ecn=true, shadow-tls-password=${SHADOW_TLS_PSK}, shadow-tls-sni=${SHADOW_TLS_SNI}, shadow-tls-version=3"
+        final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${PUBLIC_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true, shadow-tls-password=${SHADOW_TLS_PSK}, shadow-tls-sni=${SHADOW_TLS_SNI}, shadow-tls-version=3"
     else
-        final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${PUBLIC_PORT}, psk=${SNELL_PSK}, version=5, reuse=true, tfo=true, ecn=true"
+        final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${PUBLIC_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true"
     fi
     local preview_message="配置已生成。\n\n关闭此窗口后，客户端配置将打印在终端中，以便于复制。"
     dialog --title "客户端配置信息" --msgbox "${preview_message}" 10 60
@@ -323,15 +338,11 @@ view_config() {
     press_any_key
 }
 
-# =========================================================================
-# !! 已优化 !! 8. 查看日志
-# =========================================================================
 view_log() {
     if ! $is_installed; then 
         dialog --title "提示" --msgbox "Snell 未安装，无法查看日志。" 8 40
         return
     fi
-    
     if [[ "$INSTALL_MODE" == "full" ]]; then
         local log_choice
         log_choice=$(dialog --clear --backtitle "日志查看" --title "选择要查看的日志" \
@@ -340,9 +351,7 @@ view_log() {
             "2" "查看 Shadow-TLS 服务日志 (shadow-tls)" \
             "3" "查看合并日志 (用于排查交互问题)" \
             3>&1 1>&2 2>&3)
-        
         if [[ -z "$log_choice" ]]; then return; fi
-
         local service_to_log=""
         case "$log_choice" in
             1) service_to_log="-u snell.service" ;;
@@ -350,13 +359,11 @@ view_log() {
             3) service_to_log="-u snell.service -u shadow-tls.service" ;;
             *) return ;;
         esac
-        
         clear
         echo -e "正在加载日志... ${Yellow}(使用箭头滚动，按 'q' 键退出返回菜单)${NC}"; sleep 1
         # shellcheck disable=SC2086
         journalctl -e $service_to_log
-
-    else # 如果是仅 Snell 模式
+    else
         clear
         echo -e "正在加载 Snell 日志... ${Yellow}(使用箭头滚动，按 'q' 键退出返回菜单)${NC}"; sleep 1
         journalctl -e -u snell.service
