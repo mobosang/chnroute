@@ -106,4 +106,4 @@ EOF
 sysctl -p
 
 # 输出PSK
-echo "$AGENT_NAME = snell, $PUBLIC_IP, 56139, psk=$PSK1, version=4, reuse=true, tfo=true, ecn=true, shadow-tls-password=$PSK2, shadow-tls-sni=quark.cn, shadow-tls-version=3"
+echo "$AGENT_NAME = snell, $PUBLIC_IP, 56139, psk=$PSK1, version=5, reuse=true, tfo=true, ecn=true, shadow-tls-password=$PSK2, shadow-tls-sni=quark.cn, shadow-tls-version=3"
