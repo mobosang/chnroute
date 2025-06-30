@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 定义Snell、shadow-tls版本和下载链接
-SNELL_VERSION="v4.1.1"
+SNELL_VERSION="v5.0.0"
 SHADOW_TLS_VERSION="v0.2.25"
 
 SNELL_URL="https://dl.nssurge.com/snell/snell-server-$SNELL_VERSION-linux-amd64.zip"
