@@ -3,6 +3,8 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版)
 #
+# v2.2.0: 修复了 dialog 窗口无法复制配置信息的问题。
+#
 # 特性:
 # - TUI 菜单式管理界面
 # - 采用用户指定的 Snell 和 Shadow-TLS 原始配置
@@ -14,7 +16,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="2.1.0-custom"
+SCRIPT_VERSION="2.2.0-custom"
 SNELL_VERSION="v5.0.0"
 SHADOW_TLS_VERSION="v0.2.25"
 
@@ -161,23 +163,19 @@ do_install() {
         PUBLIC_PORT=$(echo "$form_output" | sed -n '2p')
         SNELL_PORT=$(echo "$form_output" | sed -n '3p')
         SHADOW_TLS_SNI=$(echo "$form_output" | sed -n '4p')
-        # 在 full 模式下，Snell 必须监听本地回环地址
         SNELL_LISTEN_ADDR="127.0.0.1"
     else
         INSTALL_MODE="snell_only"
         SNELL_PORT=$(echo "$form_output" | sed -n '2p')
         PUBLIC_PORT=$SNELL_PORT
-        # 在 snell_only 模式下，Snell 必须监听所有地址
         SNELL_LISTEN_ADDR="0.0.0.0"
     fi
 
     echo "开始安装..."
-    # 停止现有服务
     if $is_installed; then
         systemctl stop snell.service shadow-tls.service >/dev/null 2>&1
     fi
 
-    # 安装二进制文件
     mkdir -p "$SNELL_INSTALL_DIR"
     wget -qO snell.zip "$SNELL_URL" && unzip -qo snell.zip -d "$SNELL_INSTALL_DIR" && rm snell.zip
     chmod +x "$SNELL_INSTALL_DIR/snell-server"
@@ -186,19 +184,13 @@ do_install() {
         chmod +x "$SNELL_INSTALL_DIR/shadow-tls"
     fi
 
-    # 生成密码
     SNELL_PSK=$(openssl rand -base64 18)
     if [[ "$INSTALL_MODE" == "full" ]]; then
         SHADOW_TLS_PSK=$(openssl rand -base64 18)
     fi
 
-    # 创建配置文件目录和文件
     mkdir -p "$SNELL_CONFIG_DIR"
     
-    # =========================================================================
-    # !! 使用你指定的原始配置 !!
-    # =========================================================================
-    # 1. 写入 Snell 配置文件
     cat > "$SNELL_CONFIG_FILE" << EOF
 [snell-server]
 dns = 1.1.1.1, 9.9.9.9, 2606:4700:4700::1111
@@ -207,7 +199,6 @@ psk = ${SNELL_PSK}
 ipv6 = false
 EOF
 
-    # 2. 创建 Snell 服务文件
     cat > "$SNELL_SERVICE_FILE" << EOF
 [Unit]
 Description=Snell Proxy Service
@@ -225,7 +216,6 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-    # 3. 创建 Shadow-TLS 服务文件
     if [[ "$INSTALL_MODE" == "full" ]]; then
         cat > "$SHADOW_TLS_SERVICE_FILE" << EOF
 [Unit]
@@ -246,13 +236,9 @@ SyslogIdentifier=shadow-tls
 WantedBy=multi-user.target
 EOF
     else
-        rm -f "$SHADOW_TLS_SERVICE_FILE" # 如果从 full 模式切换到 snell_only，删除旧的服务文件
+        rm -f "$SHADOW_TLS_SERVICE_FILE"
     fi
-    # =========================================================================
-    # !! 原始配置部分结束 !!
-    # =========================================================================
 
-    # 写入 manager 配置文件，用于脚本自身管理
     cat > "$SCRIPT_CONFIG_FILE" << EOF
 AGENT_NAME="${AGENT_NAME}"
 INSTALL_MODE="${INSTALL_MODE}"
@@ -263,7 +249,6 @@ SHADOW_TLS_SNI="${SHADOW_TLS_SNI}"
 SHADOW_TLS_PSK="${SHADOW_TLS_PSK}"
 EOF
 
-    # 网络调优
     sed -i -e '/# Kernel network tuning by Snell manager script/,+4d' /etc/sysctl.conf
     cat <<EOF >> /etc/sysctl.conf
 
@@ -275,7 +260,6 @@ net.ipv4.tcp_ecn = 1
 EOF
     sysctl -p >/dev/null
 
-    # 启动服务
     systemctl daemon-reload
     systemctl enable snell.service >/dev/null 2>&1
     if [[ "$INSTALL_MODE" == "full" ]]; then
@@ -284,10 +268,11 @@ EOF
         systemctl disable shadow-tls.service >/dev/null 2>&1
     fi
     
-    do_restart # 使用重启函数来确保服务生效
+    do_restart
     
-    echo "安装/配置完成！"
-    view_config # 显示最终配置
+    clear
+    echo -e "${Green}安装/配置完成！${NC}"
+    view_config # 显示最终配置，现在这个函数会打印可复制的文本
 }
 
 # 2. 卸载
@@ -366,12 +351,16 @@ do_restart() {
     else
         echo -e "${Red}重启失败，请检查日志。${NC}"
     fi
-    # 重启操作后不暂停，直接返回菜单
 }
 
-# 7. 查看配置
+# =========================================================================
+# !! 已修复 !! 7. 查看配置
+# =========================================================================
 view_config() {
-    if ! $is_installed; then dialog --title "提示" --msgbox "Snell 未安装。" 8 40; return; fi
+    if ! $is_installed; then 
+        dialog --title "提示" --msgbox "Snell 未安装，无法查看配置。" 8 40
+        return
+    fi
     
     load_config
     local public_ip
@@ -384,7 +373,21 @@ view_config() {
         final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${PUBLIC_PORT}, psk=${SNELL_PSK}, version=5, reuse=true, tfo=true, ecn=true"
     fi
     
-    dialog --title "客户端配置信息" --msgbox "\n请复制以下配置信息到你的客户端：\n\n${final_config_string}" 20 75
+    # 步骤1: 在 dialog 中预览信息
+    dialog --title "客户端配置信息" --msgbox "\n配置已生成。关闭此窗口后，配置信息将直接打印在终端中，以便于复制。\n\n${final_config_string}" 20 75
+    
+    # 步骤2: 清屏并在终端中打印可复制的文本
+    clear
+    echo -e "${Green}==================================================================${NC}"
+    echo -e "${Yellow}请复制以下完整的客户端配置信息：${NC}"
+    echo ""
+    # 直接打印字符串，这是最容易复制的格式
+    echo "${final_config_string}"
+    echo ""
+    echo -e "${Green}==================================================================${NC}"
+
+    # 步骤3: 暂停脚本，等待用户操作
+    press_any_key
 }
 
 # 8. 查看日志
@@ -485,11 +488,11 @@ main() {
         read -p "请输入数字 [0-9]: " choice
         case "$choice" in
             0) update_script ;;
-            1|6) do_install ;; # 1 和 6 执行相同功能
+            1|6) do_install ;;
             2) do_uninstall ;;
             3) do_start ;;
             4) do_stop ;;
-            5) do_restart; press_any_key ;; # 重启后暂停
+            5) do_restart; press_any_key ;;
             7) view_config ;;
             8) view_log ;;
             9) exit 0 ;;
