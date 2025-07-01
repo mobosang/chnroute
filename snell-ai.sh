@@ -32,7 +32,7 @@ export LC_ALL=zh_CN.UTF-8
 export NCURSES_NO_UTF8_ACS=1
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="2.8.1"
+SCRIPT_VERSION="2.8.5"
 SNELL_VERSION_FOR_INSTALL="v4.1.1" # 用于全新安装时的默认版本
 SHADOW_TLS_VERSION="v0.2.25"
 
