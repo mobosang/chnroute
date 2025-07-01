@@ -1,15 +1,21 @@
 #!/bin/bash
 
 # ==============================================================================
-# Snell Server 全功能管理脚本 (定制版)
+# Snell Server 全功能管理脚本 (定制版-GOOGOLE AI 生成)
 #
-# v2.6.3: 最终修复：不再尝试解析 'snell-server -v' 的输出，直接使用脚本中定义的 SNELL_VERSION 作为显示版本，确保100%准确。
-# v2.6.4: 优化了脚本更新逻辑，仅当远程版本严格大于本地版本时才执行更新。
+# v2.7.0: 
+# - 新增功能：Snell Server 版本更新 (菜单项 2)
+# - 优化：安装时将实际版本号写入配置文件，以实现精确的版本跟踪
+# - 优化：自动从 Snell 发布页获取最新版本号
+# - 调整：重排菜单项
+#
+# v2.6.5: 初始版本
 #
 # 特性:
 # - TUI 菜单式管理界面
 # - 采用用户指定的 Snell 和 Shadow-TLS 原始配置
 # - 支持安装、卸载、启动、停止、重启服务
+# - 新增: 一键更新 Snell Server 版本
 # - 可选安装模式 (Snell-only 或 Snell + Shadow-TLS)
 # - 自动检测运行状态
 # - 持久化配置，方便管理
@@ -17,8 +23,8 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="2.6.5"
-SNELL_VERSION="v5.0.0b1"
+SCRIPT_VERSION="2.7.0"
+SNELL_VERSION_FOR_INSTALL="v4.1.1" # 用于全新安装时的默认版本
 SHADOW_TLS_VERSION="v0.2.25"
 
 # --- 文件路径 ---
@@ -30,7 +36,8 @@ SHADOW_TLS_SERVICE_FILE="/etc/systemd/system/shadow-tls.service"
 SCRIPT_CONFIG_FILE="${SNELL_CONFIG_DIR}/manager.conf"
 
 # --- 下载链接 ---
-SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-amd64.zip"
+# ## 修改 ## SNELL_URL 现在会动态生成，这里作为备用
+SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/zh/release-notes/snell"
 SHADOW_TLS_URL="https://github.com/ihciah/shadow-tls/releases/download/${SHADOW_TLS_VERSION}/shadow-tls-x86_64-unknown-linux-musl"
 SCRIPT_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-ai.sh"
 
@@ -44,7 +51,7 @@ NC="\033[0m"
 is_installed=false
 is_running=false
 install_mode=""
-snell_version_installed=""
+snell_version_installed="" # ## 修改 ## 这个变量将从配置文件读取
 
 # --- 工具函数 ---
 press_any_key() {
@@ -62,8 +69,18 @@ check_root() {
 install_dependencies() {
     if ! command -v dialog &> /dev/null; then
         echo "正在安装必要的依赖 (dialog, curl, wget, unzip)..."
-        apt-get update >/dev/null 2>&1
-        apt-get install -y dialog curl wget unzip >/dev/null 2>&1
+        # 适应不同的包管理器
+        if command -v apt-get &> /dev/null; then
+            apt-get update >/dev/null 2>&1
+            apt-get install -y dialog curl wget unzip >/dev/null 2>&1
+        elif command -v yum &> /dev/null; then
+            yum install -y dialog curl wget unzip >/dev/null 2>&1
+        elif command -v dnf &> /dev/null; then
+            dnf install -y dialog curl wget unzip >/dev/null 2>&1
+        else
+            echo -e "${Red}无法确定包管理器，请手动安装: dialog, curl, wget, unzip${NC}"
+            exit 1
+        fi
     fi
 }
 
@@ -71,6 +88,8 @@ load_config() {
     if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then
         # shellcheck source=/dev/null
         source "$SCRIPT_CONFIG_FILE"
+        # ## 修改 ## 从配置文件加载已安装的版本号
+        snell_version_installed=$SNELL_VERSION_INSTALLED
     fi
 }
 
@@ -78,10 +97,19 @@ check_status() {
     load_config
     if [[ -f "$SNELL_INSTALL_DIR/snell-server" && -f "$SNELL_CONFIG_FILE" ]]; then
         is_installed=true
-        snell_version_installed=$SNELL_VERSION
+
+        # ==================== 核心修复点 ====================
+        # 如果从配置文件中未能加载到版本号 (兼容旧版安装)
+        # 则使用脚本中定义的默认安装版本作为备用显示。
+        if [[ -z "$snell_version_installed" ]]; then
+            snell_version_installed="$SNELL_VERSION_FOR_INSTALL"
+        fi
+        # ======================================================
+
     else
         is_installed=false
         is_running=false
+        snell_version_installed=""
         return
     fi
 
@@ -97,6 +125,38 @@ check_status() {
 }
 
 # --- 核心功能函数 ---
+
+## 新增函数 ## - 获取 Snell 最新版本号
+get_latest_snell_version() {
+    # 从 Snell 发布说明页面抓取最新版本号
+    # ==================== 最终解决方案 (v5) ====================
+    # 根据用户反馈，最可靠的版本号来源是页面中的下载链接本身。
+    # 此方法直接从所有下载链接中提取版本号，进行版本排序，并取最新一个。
+    # 这是最稳定和精确的方法。
+    #
+    # 1. curl: 下载网页内容。
+    # 2. grep -oP '(?<=snell-server-)v[^-]+':
+    #    - 使用Perl正则，精确提取 "snell-server-" 之后，下一个连字符 "-" 之前的部分。
+    #    - 这样就能直接得到如 "v5.0.0b1" 或 "v4.1.1" 这样的版本字符串。
+    # 3. sort -uV:
+    #    - -u: 去除重复行 (因为有amd64, i386等多个链接)。
+    #    - -V: 按版本号进行排序 (例如 v5 > v4)。
+    # 4. tail -n 1:
+    #    - 取出排序后列表的最后一行，即为最新版本。
+    # =========================================================
+    local version
+    version=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v[^-]+' | sort -uV | tail -n 1)
+
+    if [[ -z "$version" ]]; then
+        # 如果此方法失败，说明页面结构发生重大变化或网络问题。
+        echo "error"
+    else
+        # 直接返回从URL中提取的精确版本号
+        echo "$version"
+    fi
+}
+
+
 do_install() {
     local title="安装 Snell Server"
     if $is_installed; then
@@ -105,6 +165,8 @@ do_install() {
         if [[ $? -ne 0 ]]; then return; fi
     fi
 
+    # ... [do_install 函数的其余部分保持不变，除了最后写入配置文件的部分] ...
+    
     local choice
     choice=$(dialog --clear --backtitle "Snell 安装向导" --title "模式选择" \
         --radiolist "请选择安装模式 (按空格键选择):" 15 60 2 \
@@ -154,6 +216,8 @@ do_install() {
 
     echo "正在下载 Snell Server..."
     local temp_zip; temp_zip=$(mktemp)
+    # ## 修改 ## 使用动态生成的 URL
+    local SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION_FOR_INSTALL}-linux-amd64.zip"
     if ! wget -qO "$temp_zip" "$SNELL_URL"; then
         dialog --title "错误" --msgbox "下载 Snell Server 失败！\n\n请检查网络连接或确认下载链接有效。" 10 60; rm -f "$temp_zip"; return 1
     fi
@@ -223,13 +287,15 @@ EOF
     else
         rm -f "$SHADOW_TLS_SERVICE_FILE"
     fi
-
+    
+    # ## 修改 ## 将安装版本也写入配置文件
     cat > "$SCRIPT_CONFIG_FILE" << EOF
 AGENT_NAME="${AGENT_NAME}"
 INSTALL_MODE="${INSTALL_MODE}"
 SNELL_PORT="${SNELL_PORT}"
 PUBLIC_PORT="${PUBLIC_PORT}"
 SNELL_PSK="${SNELL_PSK}"
+SNELL_VERSION_INSTALLED="${SNELL_VERSION_FOR_INSTALL}"
 EOF
     if [[ "$INSTALL_MODE" == "full" ]]; then
         cat >> "$SCRIPT_CONFIG_FILE" << EOF
@@ -260,6 +326,80 @@ EOF
     echo -e "${Green}安装/配置成功完成！${NC}"
     view_config
 }
+
+## 新增函数 ## - 更新 Snell Server 版本
+do_update_snell() {
+    if ! $is_installed; then
+        dialog --title "提示" --msgbox "Snell 未安装，无法更新。" 8 40
+        return
+    fi
+    
+    clear
+    echo -e "${Yellow}正在检查最新版本...${NC}"
+    local remote_version
+    remote_version=$(get_latest_snell_version)
+
+    if [[ "$remote_version" == "error" || -z "$remote_version" ]]; then
+        dialog --title "错误" --msgbox "获取远程版本信息失败！\n\n请检查网络或稍后再试。" 10 50
+        return
+    fi
+
+    echo -e "当前已安装版本: ${Green}${snell_version_installed}${NC}"
+    echo -e "远程最新版本:   ${Green}${remote_version}${NC}"
+
+    if [[ "$snell_version_installed" == "$remote_version" ]]; then
+        dialog --title "提示" --msgbox "恭喜！您的 Snell Server 已是最新版本。" 8 50
+        return
+    fi
+
+    dialog --title "发现新版本" --yesno "发现新版本 ${remote_version}。\n\n是否要从 ${snell_version_installed} 更新？" 10 50
+    if [[ $? -ne 0 ]]; then
+        echo "用户取消更新。"
+        return
+    fi
+    
+    clear
+    echo "正在准备更新..."
+    echo "停止相关服务..."
+    systemctl stop snell.service shadow-tls.service >/dev/null 2>&1
+    
+    echo "正在下载新版本 Snell Server (${remote_version})..."
+    local temp_zip; temp_zip=$(mktemp)
+    local NEW_SNELL_URL="https://dl.nssurge.com/snell/snell-server-${remote_version}-linux-amd64.zip"
+    
+    if ! wget -qO "$temp_zip" "$NEW_SNELL_URL"; then
+        echo -e "${Red}下载新版本失败！请检查网络。${NC}"
+        echo "正在回滚，重启旧版本服务..."
+        systemctl start snell.service
+        if [[ "$INSTALL_MODE" == "full" ]]; then systemctl start shadow-tls.service; fi
+        rm -f "$temp_zip"
+        press_any_key
+        return
+    fi
+    
+    echo "下载完成，正在替换文件..."
+    unzip -qo "$temp_zip" -d "$SNELL_INSTALL_DIR"
+    rm -f "$temp_zip"
+    
+    if [[ ! -f "$SNELL_INSTALL_DIR/snell-server" ]]; then
+        echo -e "${Red}更新失败！解压后未找到 snell-server 文件。${NC}"
+        press_any_key
+        return
+    fi
+    chmod +x "$SNELL_INSTALL_DIR/snell-server"
+    
+    echo "更新配置文件中的版本记录..."
+    # 使用 sed 安全地替换版本号
+    sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${remote_version}\"/" "$SCRIPT_CONFIG_FILE"
+    
+    echo "正在重启服务以应用更新..."
+    do_restart
+    
+    check_status # 重新检查状态以更新显示
+    echo -e "${Green}Snell Server 已成功更新至 ${remote_version}！${NC}"
+    press_any_key
+}
+
 
 do_uninstall() {
     if ! $is_installed; then dialog --title "提示" --msgbox "Snell 未安装。" 8 40; return; fi
@@ -307,7 +447,8 @@ view_config() {
     if ! $is_installed; then dialog --title "提示" --msgbox "Snell 未安装。" 8 40; return; fi
     load_config
     
-    local temp_version=${SNELL_VERSION#v}
+    # ## 修改 ## 使用实际安装的版本号来生成配置
+    local temp_version=${snell_version_installed#v}
     local snell_major_version=${temp_version:0:1}
 
     local public_ip; public_ip=$(curl -s4 ifconfig.me)
@@ -328,6 +469,7 @@ view_config() {
 }
 
 view_log() {
+    # ... [此函数保持不变] ...
     if ! $is_installed; then 
         dialog --title "提示" --msgbox "Snell 未安装，无法查看日志。" 8 40
         return
@@ -359,10 +501,8 @@ view_log() {
     fi
 }
 
-# =========================================================================
-# !! 已修复 !! 更新脚本
-# =========================================================================
 update_script() {
+    # ... [此函数保持不变] ...
     clear
     echo "正在检查更新..."
     
@@ -398,6 +538,7 @@ update_script() {
     press_any_key
 }
 
+# ## 修改 ## - 更新主菜单显示
 show_menu() {
     check_status; clear
     local mode_display_text=""
@@ -407,6 +548,7 @@ show_menu() {
     fi
     local status_text
     if $is_installed; then
+        # 使用 snell_version_installed 变量显示
         status_text="已安装 [${snell_version_installed}]${mode_display_text}"
         if $is_running; then status_text="${Green}${status_text} 并已启动${NC}";
         else status_text="${Red}${status_text} 但未启动${NC}"; fi
@@ -418,31 +560,41 @@ show_menu() {
     echo -e "${Green}0.${NC} 更新脚本"
     echo -e "-------------------------------------------------"
     echo -e "${Green}1.${NC} 安装 Snell Server"
-    echo -e "${Green}2.${NC} 卸载 Snell Server"
+    echo -e "${Yellow}2.${NC} 更新 Snell 版本" # 新增
+    echo -e "${Green}3.${NC} 卸载 Snell Server" # 序号+1
     echo -e "-------------------------------------------------"
-    echo -e "${Green}3.${NC} 启动 Snell Server"
-    echo -e "${Green}4.${NC} 停止 Snell Server"
-    echo -e "${Green}5.${NC} 重启 Snell Server"
+    echo -e "${Green}4.${NC} 启动 Snell Server" # 序号+1
+    echo -e "${Green}5.${NC} 停止 Snell Server" # 序号+1
+    echo -e "${Green}6.${NC} 重启 Snell Server" # 序号+1
     echo -e "-------------------------------------------------"
-    echo -e "${Green}6.${NC} 修改配置信息  (同安装)"
-    echo -e "${Green}7.${NC} 查看配置信息"
-    echo -e "${Green}8.${NC} 查看运行状态  (日志)"
+    echo -e "${Green}7.${NC} 修改配置信息  (同安装)" # 序号+1
+    echo -e "${Green}8.${NC} 查看配置信息" # 序号+1
+    echo -e "${Green}9.${NC} 查看运行状态  (日志)" # 序号+1
     echo -e "-------------------------------------------------"
-    echo -e "${Green}9.${NC} 退出脚本"
+    echo -e "${Green}10.${NC} 退出脚本" # 序号+1
     echo -e "================================================="
     echo -e "当前状态：${status_text}\n"
 }
 
+# ## 修改 ## - 更新主循环逻辑
 main() {
     check_root
     install_dependencies
     while true; do
         show_menu
-        read -p "请输入数字 [0-9]: " choice
+        read -p "请输入数字 [0-10]: " choice
         case "$choice" in
-            0) update_script ;; 1|6) do_install ;; 2) do_uninstall ;;
-            3) do_start ;; 4) do_stop ;; 5) do_restart; press_any_key ;;
-            7) view_config ;; 8) view_log ;; 9) exit 0 ;;
+            0) update_script ;; 
+            1) do_install ;; 
+            2) do_update_snell ;; # 新增
+            3) do_uninstall ;;    # 序号+1
+            4) do_start ;;         # 序号+1
+            5) do_stop ;;          # 序号+1
+            6) do_restart; press_any_key ;; # 序号+1
+            7) do_install ;;       # 序号+1 (修改配置)
+            8) view_config ;;      # 序号+1
+            9) view_log ;;         # 序号+1
+            10) exit 0 ;;          # 序号+1 (退出)
             *) echo -e "${Red}无效输入。${NC}"; sleep 1 ;;
         esac
     done
