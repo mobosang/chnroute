@@ -3,20 +3,22 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
-# v3.1.0:
-# - 新增：跨发行版兼容性适配 (CentOS, RHEL, Ubuntu, Debian)。
-# - 新增：自动检测并配置防火墙 (firewalld, ufw)。
-# - 新增：SELinux 状态检测与警告 (针对 CentOS/RHEL)。
-# - 优化：兼容旧版 systemd (如 CentOS 7)，自动切换服务用户模式。
-# - 优化：依赖安装列表增加 openssl。
+# v3.4.0:
+# - 新增: 多实例管理！脚本现在可以检测所有已安装的 Snell 实例。
+# - 新增: 在修改、卸载、启停、查看等操作前，会弹出菜单让用户选择要操作的具体实例。
+# - 修复: 彻底修复了在特定情况下选择安装 v4 版却实际安装 v3 版的逻辑 bug。
+# - 优化: 卸载流程现在是实例感知的，可以精确删除指定实例而不影响其他实例。
 #
-# v3.0.0: 新增版本更换功能
+# v3.3.0:
+# - 新增: 智能检测现有 Snell 服务，支持“共存模式”安装，允许多个 Snell 实例并行运行。
+# - 优化: 安装 v3.0.1 兼容版时，自动禁用并隐藏 Shadow-TLS 选项，因其不被支持。
 #
 # 特性:
 # - TUI 菜单式管理界面
+# - 新增: 强大的多实例管理（安装、修改、卸载、启停、查看）
 # - 采用用户指定的 Snell 和 Shadow-TLS 原始配置
 # - 支持安装、卸载、启动、停止、重启服务
-# - 新增: 一键更新/更换 Snell Server 版本
+# - 一键更新/更换 Snell Server 版本
 # - 可选安装模式 (Snell-only 或 Snell + Shadow-TLS)
 # - 自动检测运行状态
 # - 持久化配置，方便管理
@@ -24,22 +26,28 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.1.0"
+SCRIPT_VERSION="3.4.0"
 SNELL_VERSION_FOR_INSTALL="v4.1.1" # 用于全新安装时的默认版本
 SHADOW_TLS_VERSION="v0.2.25"
 
-# --- 文件路径 ---
+# --- 文件路径 (将在运行时动态生成) ---
 SNELL_INSTALL_DIR="/usr/local/bin"
-SNELL_CONFIG_DIR="/etc/snell"
-SNELL_CONFIG_FILE="${SNELL_CONFIG_DIR}/snell-server.conf"
-SNELL_SERVICE_FILE="/etc/systemd/system/snell.service"
-SHADOW_TLS_SERVICE_FILE="/etc/systemd/system/shadow-tls.service"
-SCRIPT_CONFIG_FILE="${SNELL_CONFIG_DIR}/manager.conf"
+SNELL_CONFIG_DIR=""
+SNELL_CONFIG_FILE=""
+SNELL_SERVICE_FILE=""
+SHADOW_TLS_SERVICE_FILE=""
+SCRIPT_CONFIG_FILE=""
+SNELL_BINARY_NAME=""
+SHADOW_TLS_BINARY_NAME=""
+SNELL_SERVICE_NAME=""
+SHADOW_TLS_SERVICE_NAME=""
 
 # --- 下载链接 ---
 SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/zh/release-notes/snell"
 SHADOW_TLS_URL="https://github.com/ihciah/shadow-tls/releases/download/${SHADOW_TLS_VERSION}/shadow-tls-x86_64-unknown-linux-musl"
 SCRIPT_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-ai.sh"
+SNELL_V3_SPECIAL_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-server-v3.0.1-linux-amd64.zip"
+
 
 # --- 颜色定义 ---
 Green="\033[32m"
@@ -48,10 +56,7 @@ Yellow="\033[33m"
 NC="\033[0m"
 
 # --- 状态变量 ---
-is_installed=false
-is_running=false
-install_mode=""
-snell_version_installed=""
+instance_suffix="" # 后缀, e.g., "" for default, "-2", "-3"
 
 # --- 工具函数 ---
 press_any_key() {
@@ -66,57 +71,92 @@ check_root() {
     fi
 }
 
-## MODIFICATION ## - 增强的依赖安装
-install_dependencies() {
-    # 检查 dialog 是否已安装，作为判断是否需要安装依赖的标志
-    if command -v dialog &> /dev/null; then
-        return
+# 动态设置路径
+setup_paths() {
+    local suffix="$1"
+    instance_suffix=$suffix
+    SNELL_CONFIG_DIR="/etc/snell${suffix}"
+    SNELL_CONFIG_FILE="${SNELL_CONFIG_DIR}/snell-server.conf"
+    SNELL_SERVICE_NAME="snell${suffix}.service"
+    SNELL_SERVICE_FILE="/etc/systemd/system/${SNELL_SERVICE_NAME}"
+    SHADOW_TLS_SERVICE_NAME="shadow-tls${suffix}.service"
+    SHADOW_TLS_SERVICE_FILE="/etc/systemd/system/${SHADOW_TLS_SERVICE_NAME}"
+    SCRIPT_CONFIG_FILE="${SNELL_CONFIG_DIR}/manager.conf"
+    SNELL_BINARY_NAME="snell-server${suffix}"
+    SHADOW_TLS_BINARY_NAME="shadow-tls${suffix}"
+}
+
+## MODIFICATION ## - New core function to select an instance
+select_snell_instance() {
+    local title="$1"
+    local existing_services
+    # 修复：增加 -maxdepth 1 避免搜索子目录中的符号链接
+    existing_services=$(find /etc/systemd/system/ -maxdepth 1 -name "snell*.service" -exec basename {} \; 2>/dev/null | sort -V)
+
+    if [[ -z "$existing_services" ]]; then
+        dialog --title "错误" --msgbox "未找到任何已安装的 Snell 实例。\n\n请先使用选项 1 或 2 进行安装。" 10 50
+        return 1
+    fi
+
+    local menu_items=()
+    while IFS= read -r service_name; do
+        local config_dir="/etc/${service_name%.service}"
+        local agent_name="N/A"
+        if [[ -f "${config_dir}/manager.conf" ]]; then
+            # Use grep to avoid sourcing potentially harmful files
+            agent_name=$(grep -oP 'AGENT_NAME="\K[^"]+' "${config_dir}/manager.conf")
+        fi
+        menu_items+=("$service_name" "节点名: $agent_name")
+    done <<< "$existing_services"
+
+    local choice
+    choice=$(dialog --clear --backtitle "Snell 多实例管理" --title "$title" \
+        --menu "请选择您要操作的 Snell 实例:" 20 70 15 "${menu_items[@]}" 3>&1 1>&2 2>&3)
+
+    if [[ -z "$choice" ]]; then
+        return 1 # User cancelled
+    fi
+
+    local suffix
+    if [[ "$choice" == "snell.service" ]]; then
+        suffix=""
+    else
+        suffix=$(echo "$choice" | sed -n 's/snell\(.*\)\.service/\1/p')
     fi
     
+    setup_paths "$suffix"
+    return 0
+}
+
+
+install_dependencies() {
+    if command -v dialog &> /dev/null; then return; fi
     echo "正在安装必要的依赖 (dialog, curl, wget, unzip, openssl)..."
-    
-    # Debian/Ubuntu
     if command -v apt-get &> /dev/null; then
-        apt-get update >/dev/null 2>&1
-        apt-get install -y dialog curl wget unzip openssl >/dev/null 2>&1
-    # CentOS/RHEL (Yum)
+        apt-get update >/dev/null 2>&1; apt-get install -y dialog curl wget unzip openssl >/dev/null 2>&1
     elif command -v yum &> /dev/null; then
-        yum install -y epel-release >/dev/null 2>&1 # dialog 在 epel 源中
-        yum install -y dialog curl wget unzip openssl >/dev/null 2>&1
-    # Fedora/RHEL (DNF)
+        yum install -y epel-release >/dev/null 2>&1; yum install -y dialog curl wget unzip openssl >/dev/null 2>&1
     elif command -v dnf &> /dev/null; then
-        dnf install -y epel-release >/dev/null 2>&1
-        dnf install -y dialog curl wget unzip openssl >/dev/null 2>&1
+        dnf install -y epel-release >/dev/null 2>&1; dnf install -y dialog curl wget unzip openssl >/dev/null 2>&1
     else
-        echo -e "${Red}无法确定包管理器，请手动安装: dialog, curl, wget, unzip, openssl${NC}"
-        exit 1
+        echo -e "${Red}无法确定包管理器，请手动安装: dialog, curl, wget, unzip, openssl${NC}"; exit 1
     fi
 }
 
-## MODIFICATION ## - 新增防火墙配置函数
 open_firewall_ports() {
-    local port=$1
-    echo "正在配置防火墙以开放端口: ${port}/tcp and ${port}/udp"
-
-    # firewalld (CentOS/RHEL)
+    local port=$1; echo "正在配置防火墙以开放端口: ${port}/tcp and ${port}/udp"
     if systemctl is-active --quiet firewalld; then
         firewall-cmd --zone=public --add-port="${port}/tcp" --permanent >/dev/null 2>&1
         firewall-cmd --zone=public --add-port="${port}/udp" --permanent >/dev/null 2>&1
-        firewall-cmd --reload >/dev/null 2>&1
-        echo -e "${Green}firewalld 规则已添加。${NC}"
-    # ufw (Ubuntu/Debian)
+        firewall-cmd --reload >/dev/null 2>&1; echo -e "${Green}firewalld 规则已添加。${NC}"
     elif command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        ufw allow "${port}" >/dev/null 2>&1
-        ufw reload >/dev/null 2>&1
-        echo -e "${Green}ufw 规则已添加。${NC}"
+        ufw allow "${port}" >/dev/null 2>&1; ufw reload >/dev/null 2>&1; echo -e "${Green}ufw 规则已添加。${NC}"
     else
         echo -e "${Yellow}未检测到活动的 firewalld 或 ufw。请手动开放端口: ${port}${NC}"
     fi
 }
 
-## MODIFICATION ## - 新增SELinux检测函数
 check_selinux() {
-    # 仅在 RHEL/CentOS 系列系统上检查
     if [[ -f /etc/redhat-release ]] && command -v sestatus &> /dev/null; then
         sestatus_output=$(sestatus)
         if echo "$sestatus_output" | grep -q "SELinux status:.*enabled" && echo "$sestatus_output" | grep -q "Current mode:.*enforcing"; then
@@ -131,112 +171,89 @@ check_selinux() {
     fi
 }
 
-load_config() {
-    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then
-        source "$SCRIPT_CONFIG_FILE"
-        snell_version_installed=$SNELL_VERSION_INSTALLED
-    fi
-}
-
-check_status() {
-    load_config
-    if [[ -f "$SNELL_INSTALL_DIR/snell-server" && -f "$SNELL_CONFIG_FILE" ]]; then
-        is_installed=true
-        if [[ -z "$snell_version_installed" ]]; then
-            snell_version_installed="$SNELL_VERSION_FOR_INSTALL"
-        fi
-    else
-        is_installed=false
-        is_running=false
-        snell_version_installed=""
-        return
-    fi
-
-    if systemctl is-active --quiet snell.service; then
-        if [[ "$INSTALL_MODE" == "full" ]]; then
-            if systemctl is-active --quiet shadow-tls.service; then
-                is_running=true
-            else
-                is_running=false
-            fi
-        else
-            is_running=true
-        fi
-    else
-        is_running=false
-    fi
-}
-
 # --- 核心功能函数 ---
 
-## 修改 ## - 获取 Snell 最新版本号
 get_latest_snell_version() {
-    local version
-    version=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v[^-]+' | sort -uV | tail -n 1)
-    if [[ -z "$version" ]]; then
-        echo "error"
-    else
-        echo "$version"
-    fi
+    local version; version=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v[^-]+' | sort -uV | tail -n 1)
+    if [[ -z "$version" ]]; then echo "error"; else echo "$version"; fi
 }
 
-## 新增函数 ## - 获取所有可用的 Snell 版本列表 (从新到旧排序)
 get_available_versions() {
-    local versions
-    versions=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v[^-]+' | sort -urV)
-    if [[ -z "$versions" ]]; then
-        echo "error"
-    else
-        echo "$versions"
-    fi
+    local versions; versions=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v[^-]+' | sort -urV)
+    if [[ -z "$versions" ]]; then echo "error"; else echo "$versions"; fi
 }
 
-do_install() {
-    local title="安装 Snell Server"
-    if $is_installed; then
-        title="修改配置"
-        dialog --title "$title" --yesno "您已安装 Snell。要重新配置吗？\n\n这将覆盖现有设置并重启服务。" 10 50
-        if [[ $? -ne 0 ]]; then return; fi
-    else
-        ## MODIFICATION ## - 首次安装时检查 SELinux
+_install_or_modify_logic() {
+    local install_version="$1"
+    local download_url="$2"
+    local special_flag="$3" # true or false for v3
+    local force_snell_only="$4" # true or false
+    local mode="$5" # "new" or "modify"
+
+    if [[ "$mode" == "new" ]]; then
+        local existing_services
+        # 使用 -maxdepth 1 避免重复计数
+        existing_services=$(find /etc/systemd/system/ -maxdepth 1 -name "snell*.service" -exec basename {} \; 2>/dev/null)
+        
+        if [[ -n "$existing_services" ]]; then
+            local count; count=$(echo "$existing_services" | wc -l)
+            local next_instance_num=$((count + 1))
+
+            local choice; choice=$(dialog --clear --backtitle "安装检测" --title "检测到现有 Snell 服务" \
+                --menu "系统上已存在 ${count} 个 Snell 服务实例。\n请选择您的操作:" 15 70 2 \
+                "overwrite" "覆盖安装 (管理默认实例 snell.service)" \
+                "coexist"   "共存安装 (创建新实例 snell-${next_instance_num}.service)" \
+                3>&1 1>&2 2>&3)
+            
+            if [[ -z "$choice" ]]; then return 1; fi
+            if [[ "$choice" == "coexist" ]]; then
+                setup_paths "-${next_instance_num}"
+                dialog --title "共存模式提示" --msgbox "您已选择【共存模式】。\n\n- 新服务名: ${SNELL_SERVICE_NAME}\n\n【重要】\n在接下来的配置中，您【必须】为新实例指定一个【完全不同】的端口号！" 15 70
+            else
+                setup_paths "" # Overwrite
+                dialog --title "覆盖模式警告" --yesno "您已选择【覆盖安装】。\n\n这将使用新的配置完全覆盖现有的默认实例 (snell.service)！确定吗？" 12 60
+                if [[ $? -ne 0 ]]; then return 1; fi
+            fi
+        else
+            setup_paths "" # First install
+        fi
         check_selinux
     fi
 
-    local choice
-    choice=$(dialog --clear --backtitle "Snell 安装向导" --title "模式选择" \
-        --radiolist "请选择安装模式 (按空格键选择):" 15 60 2 \
-        "full" "Snell + Shadow-TLS (推荐)" "on" \
-        "snell_only" "仅 Snell (轻量)" "off" \
-        3>&1 1>&2 2>&3)
-    
-    if [[ -z "$choice" ]]; then echo "取消安装。"; return; fi
-    
-    local agent_name="MyNode"
-    local snell_port="36139"
-    local public_port="56139"
-    local shadow_tls_sni=""
-
-    local form_items
-    if [[ "$choice" == "full" ]]; then
-        shadow_tls_sni="quark.cn"
-        form_items=(
-            "节点名称:" 1 1 "$agent_name" 1 28 40 0
-            "Shadow-TLS 端口 (对外):" 2 1 "$public_port" 2 28 40 0
-            "Snell 内部端口:" 3 1 "$snell_port" 3 28 40 0
-            "Shadow-TLS 伪装域名:" 4 1 "$shadow_tls_sni" 4 28 40 0
-        )
-    else
-        form_items=(
-            "节点名称:" 1 1 "$agent_name" 1 28 40 0
-            "Snell 端口 (对外):" 2 1 "$snell_port" 2 28 40 0
-        )
+    # Load existing config if in modify mode
+    local agent_name="MyNode${instance_suffix}"; local snell_port="36139"; local public_port="56139"; local shadow_tls_sni="quark.cn"
+    if [[ "$mode" == "modify" ]] && [[ -f "$SCRIPT_CONFIG_FILE" ]]; then
+        source "$SCRIPT_CONFIG_FILE"
+        agent_name=$AGENT_NAME; snell_port=$SNELL_PORT; public_port=$PUBLIC_PORT; shadow_tls_sni=${SHADOW_TLS_SNI:-"quark.cn"}
+    elif [[ -n "$instance_suffix" ]]; then # Suggest different ports for new coexisting instances
+        local num=${instance_suffix#-}
+        snell_port=$((36139 + num - 1)); public_port=$((56139 + num - 1))
     fi
 
-    local form_output
-    form_output=$(dialog --clear --backtitle "Snell 安装向导" --title "参数配置" --form "请输入以下参数:" 15 75 4 "${form_items[@]}" 3>&1 1>&2 2>&3)
+    local choice
+    if [[ "$force_snell_only" == "true" ]]; then
+        dialog --title "兼容性提示" --msgbox "您正在安装的 Snell v3.0.1 不支持 Shadow-TLS。\n将自动以【仅 Snell】模式进行配置。" 10 60
+        choice="snell_only"
+    else
+        choice=$(dialog --clear --backtitle "Snell 安装向导" --title "模式选择 (实例: ${SNELL_SERVICE_NAME})" \
+            --radiolist "请选择安装模式 (按空格键选择):" 15 60 2 \
+            "full" "Snell + Shadow-TLS (推荐)" on \
+            "snell_only" "仅 Snell (轻量)" off \
+            3>&1 1>&2 2>&3)
+    fi
+    if [[ -z "$choice" ]]; then echo "取消操作。"; return 1; fi
+    
+    local form_items
+    if [[ "$choice" == "full" ]]; then
+        form_items=("节点名称:" 1 1 "$agent_name" 1 28 40 0 "Shadow-TLS 端口 (对外):" 2 1 "$public_port" 2 28 40 0 "Snell 内部端口:" 3 1 "$snell_port" 3 28 40 0 "Shadow-TLS 伪装域名:" 4 1 "$shadow_tls_sni" 4 28 40 0)
+    else
+        form_items=("节点名称:" 1 1 "$agent_name" 1 28 40 0 "Snell 端口 (对外):" 2 1 "$snell_port" 2 28 40 0)
+    fi
 
-    if [[ -z "$form_output" ]]; then echo "取消安装。"; return; fi
+    local form_output; form_output=$(dialog --clear --backtitle "Snell 安装向导" --title "参数配置 (实例: ${SNELL_SERVICE_NAME})" --form "请输入以下参数:" 15 75 4 "${form_items[@]}" 3>&1 1>&2 2>&3)
+    if [[ -z "$form_output" ]]; then echo "取消操作。"; return 1; fi
 
+    local INSTALL_MODE; local PUBLIC_PORT; local SNELL_PORT; local SHADOW_TLS_SNI; local SNELL_LISTEN_ADDR;
     AGENT_NAME=$(echo "$form_output" | sed -n '1p')
     if [[ "$choice" == "full" ]]; then
         INSTALL_MODE="full"; PUBLIC_PORT=$(echo "$form_output" | sed -n '2p'); SNELL_PORT=$(echo "$form_output" | sed -n '3p'); SHADOW_TLS_SNI=$(echo "$form_output" | sed -n '4p'); SNELL_LISTEN_ADDR="127.0.0.1"
@@ -244,68 +261,53 @@ do_install() {
         INSTALL_MODE="snell_only"; SNELL_PORT=$(echo "$form_output" | sed -n '2p'); PUBLIC_PORT=$SNELL_PORT; SNELL_LISTEN_ADDR="0.0.0.0"
     fi
 
-    clear
-    echo "开始准备安装环境..."
-    if $is_installed; then systemctl stop snell.service shadow-tls.service >/dev/null 2>&1; fi
+    clear; echo "开始准备环境 (实例: ${SNELL_SERVICE_NAME})..."; if [[ -f "$SNELL_SERVICE_FILE" ]]; then systemctl stop "$SNELL_SERVICE_NAME" "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1; fi
     mkdir -p "$SNELL_INSTALL_DIR" "$SNELL_CONFIG_DIR"
 
-    echo "正在下载 Snell Server..."
+    echo "正在下载 Snell Server (${install_version})..."
     local temp_zip; temp_zip=$(mktemp)
-    local SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION_FOR_INSTALL}-linux-amd64.zip"
-    if ! wget -qO "$temp_zip" "$SNELL_URL"; then
-        dialog --title "错误" --msgbox "下载 Snell Server 失败！\n\n请检查网络连接或确认下载链接有效。" 10 60; rm -f "$temp_zip"; return 1
+    if ! wget -qO "$temp_zip" "$download_url"; then
+        dialog --title "错误" --msgbox "下载 Snell Server 失败！\n请检查网络。" 10 60; rm -f "$temp_zip"; return 1
     fi
-    unzip -qo "$temp_zip" -d "$SNELL_INSTALL_DIR"; rm -f "$temp_zip"
+    local temp_unzip_dir; temp_unzip_dir=$(mktemp -d)
+    unzip -qo "$temp_zip" -d "$temp_unzip_dir"; rm -f "$temp_zip"
+    mv "${temp_unzip_dir}/snell-server" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
+    rm -r "$temp_unzip_dir"
 
-    if [[ ! -f "$SNELL_INSTALL_DIR/snell-server" ]]; then
-        dialog --title "错误" --msgbox "Snell Server 安装失败！\n\n无法在 $SNELL_INSTALL_DIR 中找到文件 'snell-server'。" 12 70; return 1
+
+    if [[ ! -f "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}" ]]; then
+        dialog --title "错误" --msgbox "Snell Server 安装失败！\n找不到文件 '${SNELL_BINARY_NAME}'。" 12 70; return 1
     fi
-    chmod +x "$SNELL_INSTALL_DIR/snell-server"; echo -e "${Green}Snell Server 二进制文件准备就绪。${NC}"
+    chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; echo -e "${Green}Snell Server 二进制文件 (${SNELL_BINARY_NAME}) 准备就绪。${NC}"
 
     if [[ "$INSTALL_MODE" == "full" ]]; then
-        echo "正在下载 Shadow-TLS..."
-        if ! wget -qO "$SNELL_INSTALL_DIR/shadow-tls" "$SHADOW_TLS_URL"; then
-            dialog --title "错误" --msgbox "下载 Shadow-TLS 失败！\n\n请检查网络连接或确认下载链接有效。" 10 60; return 1
+        echo "正在下载 Shadow-TLS..."; if ! wget -qO "${SNELL_INSTALL_DIR}/${SHADOW_TLS_BINARY_NAME}" "$SHADOW_TLS_URL"; then
+            dialog --title "错误" --msgbox "下载 Shadow-TLS 失败！" 10 60; return 1
         fi
-        chmod +x "$SNELL_INSTALL_DIR/shadow-tls"; echo -e "${Green}Shadow-TLS 二进制文件准备就绪。${NC}"
+        chmod +x "${SNELL_INSTALL_DIR}/${SHADOW_TLS_BINARY_NAME}"; echo -e "${Green}Shadow-TLS 二进制文件 (${SHADOW_TLS_BINARY_NAME}) 准备就绪。${NC}"
     fi
 
-    echo "所有二进制文件验证通过，正在写入配置文件..."
-    SNELL_PSK=$(openssl rand -base64 18)
-    local SHADOW_TLS_PSK=""; if [[ "$INSTALL_MODE" == "full" ]]; then SHADOW_TLS_PSK=$(openssl rand -base64 18); fi
+    echo "正在写入配置文件..."; local SNELL_PSK=$(openssl rand -base64 18); local SHADOW_TLS_PSK=""; if [[ "$INSTALL_MODE" == "full" ]]; then SHADOW_TLS_PSK=$(openssl rand -base64 18); fi
     
     cat > "$SNELL_CONFIG_FILE" << EOF
 [snell-server]
-dns = 1.1.1.1, 9.9.9.9, 2606:4700:4700::1111
+dns = 1.1.1.1, 9.9.9.9
 listen = ${SNELL_LISTEN_ADDR}:${SNELL_PORT}
 psk = ${SNELL_PSK}
 ipv6 = false
 EOF
 
-    ## MODIFICATION ## - 兼容旧版 Systemd (CentOS 7)
-    local service_user_line="DynamicUser=yes"
-    if [[ -f /etc/os-release ]]; then
-        source /etc/os-release
-        if [[ "$ID" == "centos" && "$VERSION_ID" == "7" ]]; then
-            echo "检测到 CentOS 7，使用静态用户 'snell' 运行服务。"
-            # 创建一个无密码、无主目录、无shell的系统用户
-            if ! id "snell" &>/dev/null; then
-                useradd -r -s /bin/false snell
-            fi
-            service_user_line="User=snell"
-        fi
-    fi
-
+    local service_user_line="DynamicUser=yes"; local snell_user="snell${instance_suffix}"; if [[ -f /etc/os-release ]]; then source /etc/os-release; if [[ "$ID" == "centos" && "$VERSION_ID" == "7" ]]; then echo "检测到 CentOS 7，使用静态用户 '${snell_user}'。"; if ! id "${snell_user}" &>/dev/null; then useradd -r -s /bin/false "${snell_user}"; fi; service_user_line="User=${snell_user}"; fi; fi
     cat > "$SNELL_SERVICE_FILE" << EOF
 [Unit]
-Description=Snell Proxy Service
+Description=Snell Proxy Service (${SNELL_SERVICE_NAME})
 After=network-online.target
 Wants=network-online.target systemd-networkd-wait-online.service
 [Service]
 Type=simple
 ${service_user_line}
 LimitNOFILE=32768
-ExecStart=${SNELL_INSTALL_DIR}/snell-server -c ${SNELL_CONFIG_FILE}
+ExecStart=${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME} -c ${SNELL_CONFIG_FILE}
 Restart=on-failure
 [Install]
 WantedBy=multi-user.target
@@ -314,17 +316,18 @@ EOF
     if [[ "$INSTALL_MODE" == "full" ]]; then
         cat > "$SHADOW_TLS_SERVICE_FILE" << EOF
 [Unit]
-Description=Shadow-TLS Server Service
+Description=Shadow-TLS Server Service (${SHADOW_TLS_SERVICE_NAME})
 Documentation=man:sstls-server
 After=network-online.target
 Wants=network-online.target
 [Service]
 Type=simple
 Environment=MONOIO_FORCE_LEGACY_DRIVER=1
-ExecStart=${SNELL_INSTALL_DIR}/shadow-tls --fastopen --v3 server --listen ::0:${PUBLIC_PORT} --server 127.0.0.1:${SNELL_PORT} --tls ${SHADOW_TLS_SNI} --password ${SHADOW_TLS_PSK}
+# 修复：移除了不正确的 --v3 参数。服务器端会自动检测协议版本。
+ExecStart=${SNELL_INSTALL_DIR}/${SHADOW_TLS_BINARY_NAME} --fastopen --v3 server --listen 0.0.0.0:${PUBLIC_PORT} --server 127.0.0.1:${SNELL_PORT} --tls ${SHADOW_TLS_SNI} --password ${SHADOW_TLS_PSK}
 StandardOutput=syslog
 StandardError=syslog
-SyslogIdentifier=shadow-tls
+SyslogIdentifier=shadow-tls${instance_suffix}
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -338,7 +341,9 @@ INSTALL_MODE="${INSTALL_MODE}"
 SNELL_PORT="${SNELL_PORT}"
 PUBLIC_PORT="${PUBLIC_PORT}"
 SNELL_PSK="${SNELL_PSK}"
-SNELL_VERSION_INSTALLED="${SNELL_VERSION_FOR_INSTALL}"
+SNELL_VERSION_INSTALLED="${install_version}"
+IS_V3_SPECIAL=${special_flag}
+INSTANCE_SUFFIX="${instance_suffix}"
 EOF
     if [[ "$INSTALL_MODE" == "full" ]]; then
         cat >> "$SCRIPT_CONFIG_FILE" << EOF
@@ -349,7 +354,6 @@ EOF
 
     sed -i -e '/# Kernel network tuning by Snell manager script/,+4d' /etc/sysctl.conf
     cat <<EOF >> /etc/sysctl.conf
-
 # Kernel network tuning by Snell manager script
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -357,289 +361,208 @@ net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_ecn = 1
 EOF
     sysctl -p >/dev/null
-
-    systemctl daemon-reload
-    systemctl enable snell.service >/dev/null 2>&1
-    if [[ "$INSTALL_MODE" == "full" ]]; then systemctl enable shadow-tls.service >/dev/null 2>&1; else systemctl disable shadow-tls.service >/dev/null 2>&1; fi
-    
-    ## MODIFICATION ## - 安装后自动配置防火墙
+    systemctl daemon-reload; systemctl enable "$SNELL_SERVICE_NAME" >/dev/null 2>&1
+    if [[ "$INSTALL_MODE" == "full" ]]; then systemctl enable "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1; else systemctl disable "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1; fi
     open_firewall_ports "$PUBLIC_PORT"
-
-    check_status
-    do_restart
-    
-    clear
-    echo -e "${Green}安装/配置成功完成！${NC}"
-    view_config
+    do_restart; clear
+    echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 安装/配置成功完成！${NC}"; view_config
 }
 
-## 更新 Snell Server 版本
+## MODIFICATION ## - Separated install functions for clarity and bug fixing
+do_install_latest() {
+    local snell_url="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION_FOR_INSTALL}-linux-amd64.zip"
+    _install_or_modify_logic "$SNELL_VERSION_FOR_INSTALL" "$snell_url" "false" "false" "new"
+}
+
+do_install_v3_special() {
+    _install_or_modify_logic "v3.0.1 (兼容版)" "$SNELL_V3_SPECIAL_URL" "true" "true" "new"
+}
+
+do_modify_config() {
+    if ! select_snell_instance "修改配置"; then return; fi
+    
+    # After selection, setup_paths is already called. Now load its config.
+    local current_version; local is_v3_special_flag;
+    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then
+        source "$SCRIPT_CONFIG_FILE"
+        current_version="$SNELL_VERSION_INSTALLED"
+        is_v3_special_flag="$IS_V3_SPECIAL"
+    else
+        dialog --title "错误" --msgbox "找不到此实例的管理配置文件 (${SCRIPT_CONFIG_FILE})。\n无法继续修改。" 10 70
+        return
+    fi
+
+    local download_url; local force_snell_only_flag;
+    if [[ "$is_v3_special_flag" == "true" ]]; then
+        download_url="$SNELL_V3_SPECIAL_URL"
+        force_snell_only_flag="true"
+    else
+        download_url="https://dl.nssurge.com/snell/snell-server-${current_version}-linux-amd64.zip"
+        force_snell_only_flag="false"
+    fi
+    
+    _install_or_modify_logic "$current_version" "$download_url" "$is_v3_special_flag" "$force_snell_only_flag" "modify"
+}
+
 do_update_snell() {
-    if ! $is_installed; then
-        dialog --title "提示" --msgbox "Snell 未安装，无法更新。" 8 40
-        return
-    fi
-    clear
-    echo -e "${Yellow}正在检查最新版本...${NC}"
-    local remote_version
-    remote_version=$(get_latest_snell_version)
-    if [[ "$remote_version" == "error" || -z "$remote_version" ]]; then
-        dialog --title "错误" --msgbox "获取远程版本信息失败！\n\n请检查网络或稍后再试。" 10 50
-        return
-    fi
-
-    echo -e "当前已安装版本: ${Green}${snell_version_installed}${NC}"
-    echo -e "远程最新版本:   ${Green}${remote_version}${NC}"
-    if [[ "$snell_version_installed" == "$remote_version" ]]; then
-        dialog --title "提示" --msgbox "恭喜！您的 Snell Server 已是最新版本。" 8 50
-        return
-    fi
-
-    dialog --title "发现新版本" --yesno "发现新版本 ${remote_version}。\n\n是否要从 ${snell_version_installed} 更新？" 10 50
-    if [[ $? -ne 0 ]]; then
-        echo "用户取消更新。"
-        return
-    fi
-
-    clear
-    echo "正在准备更新..."
-    echo "停止相关服务..."
-    systemctl stop snell.service shadow-tls.service >/dev/null 2>&1
-
-    echo "正在下载新版本 Snell Server (${remote_version})..."
-    local temp_zip; temp_zip=$(mktemp)
-    local NEW_SNELL_URL="https://dl.nssurge.com/snell/snell-server-${remote_version}-linux-amd64.zip"
-    if ! wget -qO "$temp_zip" "$NEW_SNELL_URL"; then
-        echo -e "${Red}下载新版本失败！请检查网络。${NC}"
-        echo "正在回滚，重启旧版本服务..."
-        systemctl start snell.service
-        if [[ "$INSTALL_MODE" == "full" ]]; then systemctl start shadow-tls.service; fi
-        rm -f "$temp_zip"
-        press_any_key
-        return
-    fi
-
-    echo "下载完成，正在替换文件..."
-    unzip -qo "$temp_zip" -d "$SNELL_INSTALL_DIR"
-    rm -f "$temp_zip"
-    if [[ ! -f "$SNELL_INSTALL_DIR/snell-server" ]]; then
-        echo -e "${Red}更新失败！解压后未找到 snell-server 文件。${NC}"
-        press_any_key
-        return
-    fi
-
-    chmod +x "$SNELL_INSTALL_DIR/snell-server"
-    echo "更新配置文件中的版本记录..."
-    sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${remote_version}\"/" "$SCRIPT_CONFIG_FILE"
+    if ! select_snell_instance "更新 Snell 版本"; then return; fi
     
-    echo "正在重启服务以应用更新..."
-    do_restart
+    local snell_version_installed;
+    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then source "$SCRIPT_CONFIG_FILE"; else echo "配置缺失"; return; fi
     
-    check_status
-    echo -e "${Green}Snell Server 已成功更新至 ${remote_version}！${NC}"
-    press_any_key
-}
-
-## 新增函数 ## - 更换 Snell Server 版本
-do_rollback_snell() {
-    if ! $is_installed; then
-        dialog --title "提示" --msgbox "Snell 未安装，无法更换。" 8 40
-        return
-    fi
-
-    clear
-    echo -e "${Yellow}正在获取可用版本列表...${NC}"
-    local available_versions
-    available_versions=$(get_available_versions)
-
-    if [[ "$available_versions" == "error" || -z "$available_versions" ]]; then
-        dialog --title "错误" --msgbox "获取版本列表失败！\n\n请检查网络或稍后再试。" 10 50
-        return
-    fi
-
-    # 过滤掉当前已安装的版本
-    local current_version=$snell_version_installed
-    local rollback_options
-    rollback_options=$(echo "$available_versions" | grep -v "^${current_version}$")
-
-    if [[ -z "$rollback_options" ]]; then
-        dialog --title "提示" --msgbox "没有找到比当前版本 (${current_version}) 更早的可更换版本。" 8 60
-        return
-    fi
-
-    # 创建 dialog 菜单项
-    local menu_items=()
-    local count=1
-    while IFS= read -r version; do
-        menu_items+=("$count" "$version")
-        ((count++))
-    done <<< "$rollback_options"
+    clear; echo -e "${Yellow}正在为实例 ${SNELL_SERVICE_NAME} 检查最新版本...${NC}"; local remote_version; remote_version=$(get_latest_snell_version)
+    if [[ "$remote_version" == "error" || -z "$remote_version" ]]; then dialog --title "错误" --msgbox "获取远程版本信息失败！" 10 50; return; fi
+    echo -e "当前已安装版本: ${Green}${snell_version_installed}${NC}"; echo -e "远程最新版本:   ${Green}${remote_version}${NC}"
+    if [[ "$snell_version_installed" == "$remote_version" ]]; then dialog --title "提示" --msgbox "恭喜！此实例已是最新版本。" 8 50; return; fi
     
-    local choice
-    choice=$(dialog --clear --backtitle "版本更换" --title "选择要更换到的版本" \
-        --menu "当前版本为 ${current_version}。\n请选择一个目标版本进行更换 (从新到旧排序):" 20 60 15 \
-        "${menu_items[@]}" \
-        3>&1 1>&2 2>&3)
-
-    if [[ $? -ne 0 ]]; then
-        echo "用户取消更换。"
-        return
-    fi
-
-    local selected_version
-    selected_version=$(echo "$rollback_options" | sed -n "${choice}p")
-
-    if [[ -z "$selected_version" ]]; then
-        echo "无效选择。"
-        return
-    fi
-    
-    dialog --title "确认更换" --yesno "确定要将版本从 ${current_version} 更换到 ${selected_version} 吗？" 10 50
-    if [[ $? -ne 0 ]]; then
-        echo "用户取消更换。"
-        return
-    fi
-
-    clear
-    echo "正在准备更换至 ${selected_version}..."
-    echo "停止相关服务..."
-    systemctl stop snell.service shadow-tls.service >/dev/null 2>&1
-    
-    echo "正在下载版本 ${selected_version}..."
-    local temp_zip; temp_zip=$(mktemp)
-    local ROLLBACK_URL="https://dl.nssurge.com/snell/snell-server-${selected_version}-linux-amd64.zip"
-    
-    if ! wget -qO "$temp_zip" "$ROLLBACK_URL"; then
-        echo -e "${Red}下载旧版本失败！请检查网络。${NC}"
-        echo "正在回滚，重启之前的服务..."
-        systemctl start snell.service
-        if [[ "$INSTALL_MODE" == "full" ]]; then systemctl start shadow-tls.service; fi
-        rm -f "$temp_zip"
-        press_any_key
-        return
-    fi
-    
-    echo "下载完成，正在替换文件..."
-    unzip -qo "$temp_zip" -d "$SNELL_INSTALL_DIR"
-    rm -f "$temp_zip"
-    
-    if [[ ! -f "$SNELL_INSTALL_DIR/snell-server" ]]; then
-        echo -e "${Red}更换失败！解压后未找到 snell-server 文件。${NC}"
-        press_any_key
-        return
-    fi
-    chmod +x "$SNELL_INSTALL_DIR/snell-server"
-    
-    echo "更新配置文件中的版本记录..."
-    sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${selected_version}\"/" "$SCRIPT_CONFIG_FILE"
-    
-    echo "正在重启服务以应用新版本..."
-    do_restart
-    
-    check_status
-    echo -e "${Green}Snell Server 已成功更换至 ${selected_version}！${NC}"
-    press_any_key
-}
-
-do_uninstall() {
-    if ! $is_installed; then
-        dialog --title "提示" --msgbox "Snell 未安装。" 8 40
-        return
-    fi
-    dialog --title "确认卸载" --yesno "确定要卸载 Snell Server 吗？\n\n这将删除所有相关文件和配置！" 10 50
+    dialog --title "发现新版本" --yesno "发现新版本 ${remote_version}。\n是否要为实例 ${SNELL_SERVICE_NAME} 更新？" 10 60
     if [[ $? -ne 0 ]]; then return; fi
-    clear
-    echo "正在卸载..."
-    systemctl stop snell.service shadow-tls.service >/dev/null 2>&1
-    systemctl disable snell.service shadow-tls.service >/dev/null 2>&1
-    rm -f "$SNELL_INSTALL_DIR/snell-server" "$SNELL_INSTALL_DIR/shadow-tls"
+    
+    clear; echo "准备更新..."; systemctl stop "$SNELL_SERVICE_NAME" "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1
+    echo "下载新版本 Snell Server (${remote_version})..."; local temp_zip; temp_zip=$(mktemp)
+    local NEW_SNELL_URL="https://dl.nssurge.com/snell/snell-server-${remote_version}-linux-amd64.zip"
+    if ! wget -qO "$temp_zip" "$NEW_SNELL_URL"; then echo "下载失败"; press_any_key; return; fi
+    
+    local temp_unzip_dir; temp_unzip_dir=$(mktemp -d)
+    unzip -qo "$temp_zip" -d "$temp_unzip_dir"; rm -f "$temp_zip"
+    mv "${temp_unzip_dir}/snell-server" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; rm -r "$temp_unzip_dir"
+
+    chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
+    sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${remote_version}\"/" "$SCRIPT_CONFIG_FILE"
+    sed -i "s/^IS_V3_SPECIAL=.*/IS_V3_SPECIAL=false/" "$SCRIPT_CONFIG_FILE"
+    echo "重启服务..."; do_restart
+    echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 已成功更新至 ${remote_version}！${NC}"; press_any_key
+}
+
+do_rollback_snell() {
+    if ! select_snell_instance "更换 Snell 版本"; then return; fi
+    
+    local snell_version_installed;
+    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then source "$SCRIPT_CONFIG_FILE"; else echo "配置缺失"; return; fi
+
+    clear; echo "获取可用版本..."; local available_versions; available_versions=$(get_available_versions)
+    if [[ "$available_versions" == "error" || -z "$available_versions" ]]; then dialog --title "错误" --msgbox "获取版本列表失败！" 10 50; return; fi
+    
+    local rollback_options; rollback_options=$(echo "$available_versions" | grep -v "^${snell_version_installed}$")
+    local menu_items=(); local count=1; while IFS= read -r version; do menu_items+=("$count" "$version"); ((count++)); done <<< "$rollback_options"
+    
+    local choice; choice=$(dialog --clear --menu "当前版本为 ${snell_version_installed}。\n请选择目标版本:" 20 60 15 "${menu_items[@]}" 3>&1 1>&2 2>&3)
+    if [[ $? -ne 0 ]]; then return; fi
+    
+    local selected_version; selected_version=$(echo "$rollback_options" | sed -n "${choice}p")
+    dialog --title "确认更换" --yesno "确定要将实例 ${SNELL_SERVICE_NAME} 更换到 ${selected_version} 吗？" 10 60
+    if [[ $? -ne 0 ]]; then return; fi
+
+    clear; echo "准备更换..."; systemctl stop "$SNELL_SERVICE_NAME" "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1
+    local ROLLBACK_URL="https://dl.nssurge.com/snell/snell-server-${selected_version}-linux-amd64.zip"
+    local temp_zip; temp_zip=$(mktemp)
+    if ! wget -qO "$temp_zip" "$ROLLBACK_URL"; then echo "下载失败"; press_any_key; return; fi
+    
+    local temp_unzip_dir; temp_unzip_dir=$(mktemp -d)
+    unzip -qo "$temp_zip" -d "$temp_unzip_dir"; rm -f "$temp_zip"
+    mv "${temp_unzip_dir}/snell-server" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; rm -r "$temp_unzip_dir"
+    
+    chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
+    sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${selected_version}\"/" "$SCRIPT_CONFIG_FILE"
+    sed -i "s/^IS_V3_SPECIAL=.*/IS_V3_SPECIAL=false/" "$SCRIPT_CONFIG_FILE"
+    echo "重启服务..."; do_restart
+    echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 已成功更换至 ${selected_version}！${NC}"; press_any_key
+}
+
+## MODIFICATION ## - Uninstall now requires instance selection
+do_uninstall_menu() {
+    if ! select_snell_instance "卸载 Snell 实例"; then return; fi
+
+    dialog --title "确认卸载" --yesno "【警告】\n确定要永久卸载实例 ${SNELL_SERVICE_NAME} 吗？\n\n这将删除此实例所有相关文件和配置！此操作不可逆！" 12 60
+    if [[ $? -ne 0 ]]; then return; fi
+    
+    _perform_uninstall
+}
+
+_perform_uninstall() {
+    clear; echo "正在卸载实例 ${SNELL_SERVICE_NAME}..."
+    echo "--> 停止并禁用服务..."
+    systemctl stop "$SNELL_SERVICE_NAME" "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1
+    systemctl disable "$SNELL_SERVICE_NAME" "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1
+    
+    echo "--> 删除二进制文件..."
+    rm -f "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}" "${SNELL_INSTALL_DIR}/${SHADOW_TLS_BINARY_NAME}"
+    
+    echo "--> 删除配置文件和目录..."
     rm -rf "$SNELL_CONFIG_DIR"
+    
+    echo "--> 删除服务单元文件..."
     rm -f "$SNELL_SERVICE_FILE" "$SHADOW_TLS_SERVICE_FILE"
+    
+    echo "--> 重新加载 systemd..."
     systemctl daemon-reload
-    echo -e "${Green}卸载完成！${NC}"
+    
+    echo -e "\n${Green}实例 ${SNELL_SERVICE_NAME} 已成功卸载！${NC}"
     press_any_key
 }
 
 do_start() {
-    if ! $is_installed; then
-        dialog --title "提示" --msgbox "Snell 未安装。" 8 40
-        return
-    fi
-    if $is_running; then
-        dialog --title "提示" --msgbox "Snell 已在运行中。" 8 40
-        return
-    fi
-    echo "正在启动服务..."
-    systemctl start snell.service
-    if [[ "$INSTALL_MODE" == "full" ]]; then systemctl start shadow-tls.service; fi
+    if ! select_snell_instance "启动 Snell 服务"; then return; fi
+    local is_running;
+    if systemctl is-active --quiet "$SNELL_SERVICE_NAME"; then is_running=true; else is_running=false; fi
+    if $is_running; then dialog --title "提示" --msgbox "实例 ${SNELL_SERVICE_NAME} 已在运行中。" 8 50; return; fi
+    
+    echo "正在启动服务..."; systemctl start "$SNELL_SERVICE_NAME"
+    if [[ -f "$SHADOW_TLS_SERVICE_FILE" ]]; then systemctl start "$SHADOW_TLS_SERVICE_NAME"; fi
     sleep 1
-    check_status
-    if $is_running; then
-        echo -e "${Green}启动成功！${NC}"
-    else
-        echo -e "${Red}启动失败。${NC}"
-    fi
+    if systemctl is-active --quiet "$SNELL_SERVICE_NAME"; then echo -e "${Green}启动成功！${NC}"; else echo -e "${Red}启动失败。${NC}"; fi
     press_any_key
 }
 
 do_stop() {
-    if ! $is_installed; then
-        dialog --title "提示" --msgbox "Snell 未安装。" 8 40
-        return
-    fi
-    if ! $is_running; then
-        dialog --title "提示" --msgbox "Snell 未运行。" 8 40
-        return
-    fi
-    echo "正在停止服务..."
-    systemctl stop snell.service
-    if [[ "$INSTALL_MODE" == "full" ]]; then systemctl stop shadow-tls.service; fi
-    sleep 1
-    echo -e "${Green}服务已停止。${NC}"
-    press_any_key
+    if ! select_snell_instance "停止 Snell 服务"; then return; fi
+    local is_running;
+    if systemctl is-active --quiet "$SNELL_SERVICE_NAME"; then is_running=true; else is_running=false; fi
+    if ! $is_running; then dialog --title "提示" --msgbox "实例 ${SNELL_SERVICE_NAME} 未运行。" 8 50; return; fi
+
+    echo "正在停止服务..."; systemctl stop "$SNELL_SERVICE_NAME" "$SHADOW_TLS_SERVICE_NAME" >/dev/null 2>&1
+    sleep 1; echo -e "${Green}服务已停止。${NC}"; press_any_key
 }
 
 do_restart() {
-    if ! $is_installed; then
-        dialog --title "提示" --msgbox "Snell 未安装。" 8 40
-        return
+    # This can be called without a menu
+    if [[ -z "$SNELL_SERVICE_NAME" ]]; then
+        if ! select_snell_instance "重启 Snell 服务"; then return; fi
     fi
-    echo "正在重启服务..."
-    systemctl restart snell.service
-    if [[ "$INSTALL_MODE" == "full" ]]; then systemctl restart shadow-tls.service; fi
+    echo "正在重启服务 ${SNELL_SERVICE_NAME}..."; systemctl restart "$SNELL_SERVICE_NAME"
+    if [[ -f "$SHADOW_TLS_SERVICE_FILE" ]]; then systemctl restart "$SHADOW_TLS_SERVICE_NAME"; fi
     sleep 1
-    check_status
-    if $is_running; then
-        echo -e "${Green}重启成功！${NC}"
-    else
-        echo -e "${Red}重启失败。${NC}"
-    fi
+    if systemctl is-active --quiet "$SNELL_SERVICE_NAME"; then echo -e "${Green}重启成功！${NC}"; else echo -e "${Red}重启失败。${NC}"; fi
 }
 
 view_config() {
-    if ! $is_installed; then
-        dialog --title "提示" --msgbox "Snell 未安装。" 8 40
+    if ! select_snell_instance "查看配置信息"; then return; fi
+
+    if [[ ! -f "$SCRIPT_CONFIG_FILE" ]]; then
+        dialog --title "错误" --msgbox "找不到实例 ${SNELL_SERVICE_NAME} 的管理配置文件。" 8 60
         return
     fi
-    load_config
-    
-    local temp_version=${snell_version_installed#v}
-    local snell_major_version=${temp_version:0:1}
+    source "$SCRIPT_CONFIG_FILE"
 
-    local public_ip
-    public_ip=$(curl -s4 ifconfig.me)
-    local final_config_string
+    local snell_major_version
+    if [[ "$IS_V3_SPECIAL" == "true" ]]; then
+        snell_major_version="3"
+    else
+        local temp_version=${SNELL_VERSION_INSTALLED#v}
+        snell_major_version=${temp_version%%.*}
+    fi
+    
+    local public_ip; public_ip=$(curl -s4 ifconfig.me); local final_config_string
     if [[ "$INSTALL_MODE" == "full" ]]; then
         final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${PUBLIC_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true, shadow-tls-password=${SHADOW_TLS_PSK}, shadow-tls-sni=${SHADOW_TLS_SNI}, shadow-tls-version=3"
     else
         final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${PUBLIC_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true"
     fi
     
-    local preview_message="配置已生成。\n\n关闭此窗口后，客户端配置将打印在终端中，以便于复制。"
-    dialog --title "客户端配置信息" --msgbox "${preview_message}" 10 60
+    dialog --title "客户端配置 (${SNELL_SERVICE_NAME})" --msgbox "关闭此窗口后，配置将打印在终端。" 8 70
     
     clear
-    echo -e "${Green}==================================================================${NC}"
+    echo -e "${Green}================== 实例 ${SNELL_SERVICE_NAME} 配置 ==================${NC}"
     echo -e "${Yellow}请复制以下完整的客户端配置信息：${NC}\n"
     echo "${final_config_string}"
     echo -e "\n${Green}==================================================================${NC}"
@@ -647,140 +570,81 @@ view_config() {
 }
 
 view_log() {
-    if ! $is_installed; then 
-        dialog --title "提示" --msgbox "Snell 未安装，无法查看日志。" 8 40
-        return
-    fi
+    if ! select_snell_instance "查看运行日志"; then return; fi
+    source "$SCRIPT_CONFIG_FILE"
+
     if [[ "$INSTALL_MODE" == "full" ]]; then
-        local log_choice
-        log_choice=$(dialog --clear --backtitle "日志查看" --title "选择要查看的日志" \
-            --menu "当前为 Snell + Shadow-TLS 模式，请选择：" 15 60 3 \
-            "1" "查看 Snell 服务日志 (snell-server)" \
-            "2" "查看 Shadow-TLS 服务日志 (shadow-tls)" \
-            "3" "查看合并日志 (用于排查交互问题)" \
-            3>&1 1>&2 2>&3)
+        local log_choice; log_choice=$(dialog --clear --menu "请选择要查看的日志:" 15 60 3 "1" "Snell 日志" "2" "Shadow-TLS 日志" "3" "合并日志" 3>&1 1>&2 2>&3)
         if [[ -z "$log_choice" ]]; then return; fi
-        local service_to_log=""
-        case "$log_choice" in
-            1) service_to_log="-u snell.service" ;;
-            2) service_to_log="-u shadow-tls.service" ;;
-            3) service_to_log="-u snell.service -u shadow-tls.service" ;;
-            *) return ;;
-        esac
-        clear
-        echo -e "正在加载日志... ${Yellow}(使用箭头滚动，按 'q' 键退出返回菜单)${NC}"; sleep 1
-        # shellcheck disable=SC2086
-        journalctl -e $service_to_log
+        local service_to_log=""; case "$log_choice" in 1) service_to_log="-u ${SNELL_SERVICE_NAME}";; 2) service_to_log="-u ${SHADOW_TLS_SERVICE_NAME}";; 3) service_to_log="-u ${SNELL_SERVICE_NAME} -u ${SHADOW_TLS_SERVICE_NAME}";; *) return;; esac
+        clear; echo -e "加载日志... ${Yellow}(按 'q' 键退出)${NC}"; sleep 1; journalctl -e $service_to_log -f
     else
-        clear
-        echo -e "正在加载 Snell 日志... ${Yellow}(使用箭头滚动，按 'q' 键退出返回菜单)${NC}"; sleep 1
-        journalctl -e -u snell.service
+        clear; echo -e "加载 Snell 日志... ${Yellow}(按 'q' 键退出)${NC}"; sleep 1; journalctl -e -u "$SNELL_SERVICE_NAME" -f
     fi
 }
 
 update_script() {
-    clear
-    echo "正在检查更新..."
-    
-    local local_version=$SCRIPT_VERSION
-    local remote_version
-    remote_version=$(curl -sL "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
-
-    if [[ -z "$remote_version" ]]; then
-        echo -e "${Red}获取远程版本信息失败，请检查网络或脚本URL。${NC}"
-        press_any_key
-        return
-    fi
-
-    # 使用 sort -V 进行版本号比较
-    local latest_version
-    latest_version=$(printf "%s\n%s" "$local_version" "$remote_version" | sort -V | tail -n 1)
-
-    if [[ "$latest_version" == "$local_version" ]]; then
-        echo -e "${Green}恭喜！当前已是最新版本 (${local_version})。${NC}"
-    else
-        echo -e "${Yellow}发现新版本: ${remote_version}，正在更新...${NC}"
-        local script_path="$0"
-        if ! curl -sL "${SCRIPT_URL}" -o "${script_path}"; then
-            echo -e "${Red}下载新脚本失败！${NC}"
-            press_any_key
-            return
-        fi
-        chmod +x "${script_path}"
-        echo -e "${Green}脚本已更新至 ${remote_version}！正在重新运行...${NC}"
-        sleep 2
-        exec "${script_path}"
-    fi
-    press_any_key
+    clear; echo "正在检查更新..."; local local_version=$SCRIPT_VERSION
+    local remote_version; remote_version=$(curl -sL "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
+    if [[ -z "$remote_version" ]]; then echo -e "${Red}获取远程版本信息失败。${NC}"; press_any_key; return; fi
+    local latest_version; latest_version=$(printf "%s\n%s" "$local_version" "$remote_version" | sort -V | tail -n 1)
+    if [[ "$latest_version" == "$local_version" ]]; then echo -e "${Green}恭喜！当前已是最新版本 (${local_version})。${NC}"; else
+        echo -e "${Yellow}发现新版本: ${remote_version}，正在更新...${NC}"; local script_path="$0"
+        if ! curl -sL "${SCRIPT_URL}" -o "${script_path}"; then echo -e "${Red}下载新脚本失败！${NC}"; press_any_key; return; fi
+        chmod +x "${script_path}"; echo -e "${Green}脚本已更新至 ${remote_version}！正在重新运行...${NC}"; sleep 2; exec "${script_path}"
+    fi; press_any_key
 }
 
-## MODIFICATION ## - 更新主菜单显示，统一菜单项
+# 在主菜单中正确显示实例数量
 show_menu() {
-    check_status
     clear
-    local mode_display_text=""
-    if $is_installed; then
-        if [[ "$INSTALL_MODE" == "full" ]]; then
-            mode_display_text=" (Snell + Shadow-TLS)"
-        elif [[ "$INSTALL_MODE" == "snell_only" ]]; then
-            mode_display_text=" (仅 Snell)"
-        fi
-    fi
+    local instance_count
+    # 修复：增加 -maxdepth 1 避免搜索子目录中的符号链接
+    instance_count=$(find /etc/systemd/system/ -maxdepth 1 -name "snell*.service" 2>/dev/null | wc -l)
 
-    local status_text
-    if $is_installed; then
-        status_text="已安装 [${snell_version_installed}]${mode_display_text}"
-        if $is_running; then
-            status_text="${Green}${status_text} 并已启动${NC}"
-        else
-            status_text="${Red}${status_text} 但未启动${NC}"
-        fi
-    else
-        status_text="${Red}未安装${NC}"
-    fi
-
-    echo -e "Snell Server 管理脚本 [v${SCRIPT_VERSION}]"
-    echo -e "================================================="
+    echo -e "Snell Server 多实例管理脚本 [v${SCRIPT_VERSION}]"; echo -e "================================================="
     echo -e "${Green}0.${NC} 更新脚本"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}1.${NC} 安装 Snell Server"
-    echo -e "${Yellow}2.${NC} 更新 Snell 版本"
-    echo -e "${Yellow}3.${NC} 更换 Snell 版本"
-    echo -e "${Green}4.${NC} 卸载 Snell Server"
+    echo -e "${Green}1.${NC} 安装 Snell Server (最新 v4)"
+    echo -e "${Yellow}2.${NC} 安装 Snell v3.0.1 (兼容版)"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}5.${NC} 启动 Snell Server"
-    echo -e "${Green}6.${NC} 停止 Snell Server"
-    echo -e "${Green}7.${NC} 重启 Snell Server"
+    echo -e "${Yellow}3.${NC} 更新一个实例的版本"
+    echo -e "${Yellow}4.${NC} 更换一个实例的版本"
+    echo -e "${Red}5.${NC} 卸载一个 Snell 实例"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}8.${NC} 修改配置信息  (同安装)"
-    echo -e "${Green}9.${NC} 查看配置信息"
-    echo -e "${Green}10.${NC} 查看运行状态  (日志)"
+    echo -e "${Green}6.${NC} 启动一个实例"
+    echo -e "${Green}7.${NC} 停止一个实例"
+    echo -e "${Green}8.${NC} 重启一个实例"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}11.${NC} 退出脚本"
+    echo -e "${Green}9.${NC} 修改一个实例的配置"
+    echo -e "${Green}10.${NC} 查看一个实例的配置"
+    echo -e "${Green}11.${NC} 查看一个实例的日志"
+    echo -e "-------------------------------------------------"
+    echo -e "${Green}12.${NC} 退出脚本"
     echo -e "================================================="
-    echo -e "当前状态：${status_text}\n"
+    echo -e "当前已安装实例数量: ${Green}${instance_count}${NC}"
+    echo -e "请选择一个操作...\n"
 }
 
-## MODIFICATION ## - 更新主循环逻辑
 main() {
-    check_root
-    install_dependencies
+    check_root; install_dependencies
     while true; do
         show_menu
-        read -p "请输入数字 [0-11]: " choice
+        read -p "请输入数字 [0-12]: " choice
         case "$choice" in
             0) update_script ;; 
-            1) do_install ;; 
-            2) do_update_snell ;;
-            3) do_rollback_snell ;;
-            4) do_uninstall ;;
-            5) do_start ;;
-            6) do_stop ;;
-            7) do_restart; press_any_key ;;
-            8) do_install ;;
-            9) view_config ;;
-            10) view_log ;;
-            11) exit 0 ;;
+            1) do_install_latest ;; 
+            2) do_install_v3_special ;;
+            3) do_update_snell ;;
+            4) do_rollback_snell ;;
+            5) do_uninstall_menu ;;
+            6) do_start ;;
+            7) do_stop ;;
+            8) do_restart; press_any_key ;;
+            9) do_modify_config ;;
+            10) view_config ;;
+            11) view_log ;;
+            12) exit 0 ;;
             *) echo -e "${Red}无效输入。${NC}"; sleep 1 ;;
         esac
     done
