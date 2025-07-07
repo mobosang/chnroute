@@ -45,7 +45,7 @@ SHADOW_TLS_SERVICE_NAME=""
 # --- 下载链接 ---
 SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/zh/release-notes/snell"
 SHADOW_TLS_URL="https://github.com/ihciah/shadow-tls/releases/download/${SHADOW_TLS_VERSION}/shadow-tls-x86_64-unknown-linux-musl"
-SCRIPT_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-ai.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-ai-tls.sh"
 SNELL_V3_SPECIAL_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-server-v3.0.1-linux-amd64.zip"
 
 
