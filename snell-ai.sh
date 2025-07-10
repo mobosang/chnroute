@@ -25,7 +25,7 @@
 
 # --- 全局变量和常量 ---
 SCRIPT_VERSION="3.5.0"
-SNELL_VERSION_FOR_INSTALL="v4.1.1" # 用于全新安装时的默认版本
+SNELL_VERSION_FOR_INSTALL="v5.0.0b3" # 用于全新安装时的默认版本
 
 # --- 文件路径 (将在运行时动态生成) ---
 SNELL_INSTALL_DIR="/usr/local/bin"
