@@ -507,7 +507,7 @@ show_menu() {
     echo -e "Snell Server 多实例管理脚本 (纯净版) [v${SCRIPT_VERSION}]"; echo -e "================================================="
     echo -e "${Green}0.${NC} 更新脚本"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}1.${NC} 安装 Snell Server (最新 v4)"
+    echo -e "${Green}1.${NC} 安装 Snell Server (最新 v5.0.0)"
     echo -e "${Yellow}2.${NC} 安装 Snell v3.0.1 (兼容版)"
     echo -e "-------------------------------------------------"
     echo -e "${Yellow}3.${NC} 更新一个实例的版本"
