@@ -1,5 +1,7 @@
-# NAME: 白菜emby分流
+# NAME: emby分流-直连
 DOMAIN-SUFFIX,hikeba.de
 DOMAIN,hkcdn.hikeba.de
 DOMAIN,jpcdn.hikeba.de
 DOMAIN,emby.hikeba.de
+DOMAIN,cdn.lilyemby.my
+DOMAIN,tx.lilyemby.my
