@@ -1,0 +1,5 @@
+# NAME: 白菜emby分流
+DOMAIN,hikeba.de
+DOMAIN-SUFFIX,hkcdn.hikeba.de
+DOMAIN-SUFFIX,jpcdn.hikeba.de
+DOMAIN-SUFFIX,emby.hikeba.de
