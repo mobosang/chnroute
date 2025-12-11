@@ -1,12 +1,11 @@
 # NAME: emby分流-直连
-DOMAIN-SUFFIX,longemby.com
-DOMAIN-SUFFIX,hikeba.de
 DOMAIN,hkcdn.hikeba.de
 DOMAIN,jpcdn.hikeba.de
 DOMAIN,emby.hikeba.de
 DOMAIN,cdn.lilyemby.my
 DOMAIN,tx.lilyemby.my
 DOMAIN,hkcdn.longemby.com
+
 
 
 
