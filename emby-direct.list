@@ -1,13 +1,9 @@
 # NAME: emby分流-直连
-DOMAIN,hkcdn.hikeba.de
-DOMAIN,jpcdn.hikeba.de
-DOMAIN,emby.hikeba.de
 DOMAIN,cdn.lilyemby.com
-DOMAIN,tx.lilyemby.com
-DOMAIN,aliyun.lilyemby.com
-DOMAIN,hkcdn.longemby.com
 DOMAIN,emby.janine.cn
+DOMAIN,hkcdn.longemby.com
 DOMAIN,pkstream-hk.longemby.top
+DOMAIN,jpcdn.longemby.com
 DOMAIN,pkstream-jp.longemby.top
 
 
