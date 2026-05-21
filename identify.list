@@ -1,0 +1,72 @@
+#自定义识别词-杜比视界(中英回环，配合捕获更稳定)
+(?i)DV\s*P(?:[4-9]|10)\.HDR => DoVi.HDR
+(?i)DoVi\s*P(?:[4-9]|10)\.HDR => DoVi.HDR
+(?i)HDR10\+[._\-\s]+DV => DoVi.HDR10+
+(?i)HDR10\+[._\-\s]+DoVi => DoVi.HDR10+
+(?i)HDR[._\-\s]+DV => DoVi.HDR
+(?i)HDR[._\-\s]+DoVi => DoVi.HDR
+(?i)HDR10[._\-\s]+DV => DoVi.HDR10
+(?i)HDR10[._\-\s]+DoVi => DoVi.HDR10
+(?i)HDRplus[._\-\s]+DV => DoVi.HDRplus
+(?i)HDRplus[._\-\s]+DoVi => DoVi.HDRplus
+(?i)(?<![A-Za-z0-9])DV(?![A-Za-z0-9]) => DoVi
+杜比视界 => DoVi
+(?i)Dolby[ ._-]*Vision => DoVi
+杜比视界HDR10 => DoVi HDR10
+#自定义识别词-HDR10(只做识别，不把HDR-only硬塞进杜比)
+(?i)\bHDR10\b => HDR10
+(?i)(?<![A-Za-z0-9])HDR10\+(?![A-Za-z0-9]) => HDR10+
+HDR10 => HDR10
+HDR10+ => HDR10+
+#自定义识别词-分辨率(保证 2160p/1080p 二次整理也稳定)
+(?i)(?<!\d)2160p(?!\d) => 2160p
+(?i)(?<!\d)1080p(?!\d) => 1080p
+(?i)(?<!\d)4k(?!\d) => 2160p
+#自定义识别词-3D(用于识别3D片源，具体格式优先于普通3D)
+(?i)(?<![A-Za-z0-9])3D[._\-\s]*(?:BluRay|Blu-ray|BD|BDMV|ISO)(?![A-Za-z0-9]) => 3D.BluRay
+(?i)(?<![A-Za-z0-9])(?:BluRay|Blu-ray|BD|BDMV|ISO)[._\-\s]*3D(?![A-Za-z0-9]) => 3D.BluRay
+(?i)(?<![A-Za-z0-9])3D[._\-\s]*(?:HSBS|Half[._\-\s]*SBS|Half[._\-\s]*Side[._\-\s]*By[._\-\s]*Side)(?![A-Za-z0-9]) => 3D.HSBS
+(?i)(?<![A-Za-z0-9])(?:HSBS|Half[._\-\s]*SBS|Half[._\-\s]*Side[._\-\s]*By[._\-\s]*Side)[._\-\s]*3D(?![A-Za-z0-9]) => 3D.HSBS
+(?i)(?<![A-Za-z0-9])3D[._\-\s]*(?:SBS|Side[._\-\s]*By[._\-\s]*Side)(?![A-Za-z0-9]) => 3D.SBS
+(?i)(?<![A-Za-z0-9])(?:SBS|Side[._\-\s]*By[._\-\s]*Side)[._\-\s]*3D(?![A-Za-z0-9]) => 3D.SBS
+(?i)(?<![A-Za-z0-9])3D[._\-\s]*(?:HTAB|Half[._\-\s]*TAB|Half[._\-\s]*OU|Half[._\-\s]*Over[._\-\s]*Under|Half[._\-\s]*Top[._\-\s]*Bottom)(?![A-Za-z0-9]) => 3D.HTAB
+(?i)(?<![A-Za-z0-9])(?:HTAB|Half[._\-\s]*TAB|Half[._\-\s]*OU|Half[._\-\s]*Over[._\-\s]*Under|Half[._\-\s]*Top[._\-\s]*Bottom)[._\-\s]*3D(?![A-Za-z0-9]) => 3D.HTAB
+(?i)(?<![A-Za-z0-9])3D[._\-\s]*(?:TAB|OU|Over[._\-\s]*Under|Top[._\-\s]*Bottom)(?![A-Za-z0-9]) => 3D.TAB
+(?i)(?<![A-Za-z0-9])(?:TAB|OU|Over[._\-\s]*Under|Top[._\-\s]*Bottom)[._\-\s]*3D(?![A-Za-z0-9]) => 3D.TAB
+(?i)(?<![A-Za-z0-9])3D[._\-\s]*(?:MVC|Frame[._\-\s]*Packing|Frame[._\-\s]*Packed)(?![A-Za-z0-9]) => 3D.MVC
+(?i)(?<![A-Za-z0-9])(?:MVC|Frame[._\-\s]*Packing|Frame[._\-\s]*Packed)[._\-\s]*3D(?![A-Za-z0-9]) => 3D.MVC
+(?i)(?<![A-Za-z0-9])(?:HSBS|Half[._\-\s]*SBS|Half[._\-\s]*Side[._\-\s]*By[._\-\s]*Side)(?![A-Za-z0-9]) => 3D.HSBS
+(?i)(?<![A-Za-z0-9])(?:SBS|Side[._\-\s]*By[._\-\s]*Side)(?![A-Za-z0-9]) => 3D.SBS
+(?i)(?<![A-Za-z0-9])(?:HTAB|Half[._\-\s]*TAB|Half[._\-\s]*OU|Half[._\-\s]*Over[._\-\s]*Under|Half[._\-\s]*Top[._\-\s]*Bottom)(?![A-Za-z0-9]) => 3D.HTAB
+(?i)(?<![A-Za-z0-9])(?:TAB|OU|Over[._\-\s]*Under|Top[._\-\s]*Bottom)(?![A-Za-z0-9]) => 3D.TAB
+(?i)(?<![A-Za-z0-9])(?:MVC|Frame[._\-\s]*Packing|Frame[._\-\s]*Packed)(?![A-Za-z0-9]) => 3D.MVC
+(?i)(?<![A-Za-z0-9])3D(?![A-Za-z0-9]) => 3D
+左右3D => 3D.SBS
+左右格式 => 3D.SBS
+半宽3D => 3D.HSBS
+半宽左右 => 3D.HSBS
+上下3D => 3D.TAB
+上下格式 => 3D.TAB
+半高3D => 3D.HTAB
+半高上下 => 3D.HTAB
+蓝光3D => 3D.BluRay
+3D蓝光 => 3D.BluRay
+#自定义识别词-保留WEB-DL(不清理，只保证被识别)
+(?i)\bWEB[ ._-]*DL\b => WEB-DL
+(?i)\bWEBDL\b => WEB-DL
+WEB-DL => WEB-DL
+#自定义识别词-编码(二次整理保持一致性)
+(?i)\bH[ .-]*265\b => HEVC
+(?i)\bH[ .-]*264\b => AVC
+(?i)\bX265\b => HEVC
+(?i)\bX264\b => AVC
+HEVC => HEVC
+AVC => AVC
+#自定义识别词-音轨常见写法(可选，主要提升识别稳定性，不强制改名)
+(?i)\bTrueHD\b => TrueHD
+(?i)\bDTS[- .]*HD\b => DTS-HD
+(?i)\bDTS[- .]*HD[ ._-]*MA\b => DTS-HD MA
+(?i)\bAtmos\b => Atmos
+(?i)\bAAC\b => AAC
+(?i)\bFLAC\b => FLAC
+(?i)\bAC3\b => AC3
