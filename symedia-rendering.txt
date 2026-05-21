@@ -1,0 +1,106 @@
+####################
+# 分辨率规范（统一为 4k/1080p）
+####################
+(?i)(^|[\W_])4k([\W_]|$) => .4k.
+(?i)(^|[\W_])2160p([\W_]|$) => .4k.
+(?i)(^|[\W_])1080p([\W_]|$) => .1080p.
+####################
+# 3D 版本/格式渲染词
+# 说明：
+# - 普通 3D => .3D.
+# - 左右格式 SBS / HSBS => .3D.SBS. / .3D.HSBS.
+# - 上下格式 TAB / HTAB / OU => .3D.TAB. / .3D.HTAB.
+# - 蓝光 3D / MVC / Frame Packing => .3D.BluRay. / .3D.MVC.
+####################
+# 蓝光3D / 3D蓝光
+(?i)(^|[\W_])3D[\W_]*(BluRay|Blu-ray|BD|BDMV|ISO)([\W_]|$) => .3D.BluRay.
+(?i)(^|[\W_])(BluRay|Blu-ray|BD|BDMV|ISO)[\W_]*3D([\W_]|$) => .3D.BluRay.
+蓝光3D => .3D.BluRay.
+3D蓝光 => .3D.BluRay.
+# MVC / Frame Packing，一般是蓝光3D原盘或3D编码特征
+(?i)(^|[\W_])3D[\W_]*(MVC|Frame[\W_]*Packing|Frame[\W_]*Packed)([\W_]|$) => .3D.MVC.
+(?i)(^|[\W_])(MVC|Frame[\W_]*Packing|Frame[\W_]*Packed)[\W_]*3D([\W_]|$) => .3D.MVC.
+(?i)(^|[\W_])(MVC|Frame[\W_]*Packing|Frame[\W_]*Packed)([\W_]|$) => .3D.MVC.
+# 半宽左右 HSBS / Half-SBS
+(?i)(^|[\W_])3D[\W_]*(HSBS|Half[\W_]*SBS|Half[\W_]*Side[\W_]*By[\W_]*Side)([\W_]|$) => .3D.HSBS.
+(?i)(^|[\W_])(HSBS|Half[\W_]*SBS|Half[\W_]*Side[\W_]*By[\W_]*Side)[\W_]*3D([\W_]|$) => .3D.HSBS.
+(?i)(^|[\W_])(HSBS|Half[\W_]*SBS|Half[\W_]*Side[\W_]*By[\W_]*Side)([\W_]|$) => .3D.HSBS.
+半宽3D => .3D.HSBS.
+半宽左右 => .3D.HSBS.
+# 全宽/普通左右 SBS
+(?i)(^|[\W_])3D[\W_]*(SBS|Side[\W_]*By[\W_]*Side)([\W_]|$) => .3D.SBS.
+(?i)(^|[\W_])(SBS|Side[\W_]*By[\W_]*Side)[\W_]*3D([\W_]|$) => .3D.SBS.
+(?i)(^|[\W_])(SBS|Side[\W_]*By[\W_]*Side)([\W_]|$) => .3D.SBS.
+左右3D => .3D.SBS.
+左右格式 => .3D.SBS.
+# 半高上下 HTAB / Half-OU / Half-TAB
+(?i)(^|[\W_])3D[\W_]*(HTAB|Half[\W_]*TAB|Half[\W_]*OU|Half[\W_]*Over[\W_]*Under|Half[\W_]*Top[\W_]*Bottom)([\W_]|$) => .3D.HTAB.
+(?i)(^|[\W_])(HTAB|Half[\W_]*TAB|Half[\W_]*OU|Half[\W_]*Over[\W_]*Under|Half[\W_]*Top[\W_]*Bottom)[\W_]*3D([\W_]|$) => .3D.HTAB.
+(?i)(^|[\W_])(HTAB|Half[\W_]*TAB|Half[\W_]*OU|Half[\W_]*Over[\W_]*Under|Half[\W_]*Top[\W_]*Bottom)([\W_]|$) => .3D.HTAB.
+半高3D => .3D.HTAB.
+半高上下 => .3D.HTAB.
+# 全高/普通上下 TAB / OU / Over Under / Top Bottom
+(?i)(^|[\W_])3D[\W_]*(TAB|OU|Over[\W_]*Under|Top[\W_]*Bottom)([\W_]|$) => .3D.TAB.
+(?i)(^|[\W_])(TAB|OU|Over[\W_]*Under|Top[\W_]*Bottom)[\W_]*3D([\W_]|$) => .3D.TAB.
+(?i)(^|[\W_])(TAB|OU|Over[\W_]*Under|Top[\W_]*Bottom)([\W_]|$) => .3D.TAB.
+上下3D => .3D.TAB.
+上下格式 => .3D.TAB.
+# 普通3D兜底，必须放在各种细分3D规则后面
+(?i)(^|[\W_])3D([\W_]|$) => .3D.
+####################
+# 杜比相关渲染词，DV或Dovi统一识别为Dovi
+####################
+(?i)(?<=[\W_])(DV|DoVi|Dolby[ ._-]*Vision)[ ._-]*P(?:[4-9]|10)(?=[\W_])|(?<![A-Za-z])(DV|DoVi)(?![A-Za-z]) => DoVi
+####################
+# 编码规范
+####################
+(?i)\.H\.265\. => .HEVC.
+(?i)\.H\.264\. => .AVC.
+(?i)\bH\.?265\b => HEVC
+(?i)\bH\.?264\b => AVC
+####################
+# 内容版本：英文 -> 中文（只在原文件名出现时）
+####################
+(?i)\btheatrical\b => 院线版
+(?i)\bextended\b => 加长版
+(?i)extended[ ._-]*edition => 加长版
+(?i)extended[ ._-]*cut => 加长版
+(?i)director'?s[\W_]*cut => 导演剪辑版
+(?i)\buncut\b => 未删减版
+(?i)\bIMAX[ ._-]*Enhanced\b => .IMAX.Enhanced.
+(?i)\bIMAX\b => .IMAX.
+(?i)\bunrated\b => 未分级版
+####################
+# Remux 保留（只作为文件名字符串）
+####################
+(?i)\bremux\b => Remux
+####################
+# 保留 WEB-DL（不清理它）
+####################
+#（这里什么都不用写，留空即可）
+####################
+# 清洗你不想看到的介质脏前缀（UHD / Ultra HD / BluRay）
+# 注意：这段必须放在 3D.BluRay 识别之后
+####################
+(?i)\buhd\b(?!.*remux) =>
+(?i)ultra[\W_]*hd(?!.*remux) =>
+(?i)\bblu[-_. ]?ray\b(?!.*remux) =>
+####################
+# 清理噪音（fps/bit-depth）
+####################
+\.(?:[0-5]\dfps|59fps|10bit|10-bit|12bit|12-bit)
+####################
+# 终极点修复
+####################
+\.{2,} => .
+\.\s+\. => .
+\s+\. => .
+\.\s+ => .
+(?i)\.IMAX\.IMAX\. => .IMAX.
+(?i)\.3D\.3D\. => .3D.
+(?i)\.3D\.SBS\.3D\.SBS\. => .3D.SBS.
+(?i)\.3D\.HSBS\.3D\.HSBS\. => .3D.HSBS.
+(?i)\.3D\.TAB\.3D\.TAB\. => .3D.TAB.
+(?i)\.3D\.HTAB\.3D\.HTAB\. => .3D.HTAB.
+(?i)\.3D\.MVC\.3D\.MVC\. => .3D.MVC.
+(?i)\.3D\.BluRay\.3D\.BluRay\. => .3D.BluRay.
