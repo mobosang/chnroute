@@ -1,1 +1,11 @@
-
+# DV+HDR：只在文件名明确同时出现 DV/DoVi 和 HDR/HDR10/HDR10+ 时命中
+(?i)(?=.*(?:^|[\W_])(DV|DoVi|Dolby[\W_]*Vision)(?:[\W_]|$))(?=.*(?:^|[\W_])(HDR10\+|HDR10Plus|HDR10P|HDR10|HDR)(?:[\W_]|$)).* => DV+HDR
+# 纯 DV：有 DV/DoVi，但明确排除 HDR/HDR10/HDR10+
+(?i)(?=.*(?:^|[\W_])(DV|DoVi|Dolby[\W_]*Vision)(?:[\W_]|$))(?!.*(?:^|[\W_])(HDR10\+|HDR10Plus|HDR10P|HDR10|HDR)(?:[\W_]|$)).* => DV
+# 杜比 / DV 字段捕获：只捕获纯 DV，避免纯 DV 被带成 DV+HDR
+杜比#(?i)(?=.*(?:^|[\W_])(DV|DoVi|Dolby[\W_]*Vision)(?:[\W_]|$))(?!.*(?:^|[\W_])(HDR10\+|HDR10Plus|HDR10P|HDR10|HDR)(?:[\W_]|$)).*#
+# 内容版本 / edition
+# 增强 3D 捕获：
+# - 支持渲染后的 3D.BluRay / 3D.SBS / 3D.HSBS / 3D.TAB / 3D.HTAB / 3D.MVC
+# - 支持原始文件名里的 3D / 3-D / SBS / HSBS / TAB / HTAB / OU / MVC / 左右3D / 上下3D / 蓝光3D 等
+edition#(?i)(IMAX[ ._-]*Enhanced|IMAX|3D[ ._-]*(BluRay|SBS|HSBS|TAB|HTAB|MVC)|3D\.BluRay|3D\.SBS|3D\.HSBS|3D\.TAB|3D\.HTAB|3D\.MVC|3D|3-D|3D版|三维版|立体版|蓝光3D|3D蓝光|左右3D|左右格式|半宽3D|半宽左右|上下3D|上下格式|半高3D|半高上下|HSBS|Half[ ._-]*SBS|Half[ ._-]*Side[ ._-]*By[ ._-]*Side|SBS|Side[ ._-]*By[ ._-]*Side|HTAB|Half[ ._-]*TAB|Half[ ._-]*OU|Half[ ._-]*Over[ ._-]*Under|Half[ ._-]*Top[ ._-]*Bottom|TAB|OU|Over[ ._-]*Under|Top[ ._-]*Bottom|MVC|Frame[ ._-]*Packing|Frame[ ._-]*Packed|extended[ ._-]*edition|extended[ ._-]*cut|extended|theatrical[ ._-]*cut|theatrical|director'?s[\W_]*cut|directors[\W_]*cut|uncut|unrated|院线版|加长版|导演剪辑版|未删减版|未分级版)#
