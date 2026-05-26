@@ -1,28 +1,43 @@
-CMCT
-CHD
-HDS
-OurTV
-HHWEB
-ADWeb
-iHD
-WiKi
-MTeam
-PTer
-FLTTH
-LHD
-Audies
-CtrlHD
-HDSky
-PandaTV
-DBTV
-UBits
-LeagueWEB
-CatWEB
-SweetSub
-ANi
-LoliHouse
-NC-Raws
-Lilith-Raws
-Sakurato
-Gimy
-404
+gimy => Gimy
+剧迷 => Gimy
+404 => 404
+HHWEB => HHWEB
+HH Web => HHWEB
+OurTV => OurTV
+Our TV => OurTV
+ADWeb => ADWeb
+AD WEB => ADWeb
+WiKi => WiKi
+iHD => iHD
+PTerWEB => PTerWEB
+PTer Web => PTerWEB
+CatWEB => CatWEB
+Cat WEB => CatWEB
+LeagueWEB => LeagueWEB
+League WEB => LeagueWEB
+ANi => ANi
+Ani => ANi
+LoliHouse => LoliHouse
+Loli House => LoliHouse
+NC-Raws => NC-Raws
+NCRaws => NC-Raws
+Lilith-Raws => Lilith-Raws
+Lilith Raws => Lilith-Raws
+SweetSub => SweetSub
+Sweet Sub => SweetSub
+Sakurato => Sakurato
+MingY => MingY
+HDSWEB => HDSWEB
+HDS WEB => HDSWEB
+HDSky => HDSky
+CMCT => CMCT
+CHD => CHD
+HDS => HDS
+MTeam => MTeam
+PandaTV => PandaTV
+DBTV => DBTV
+UBits => UBits
+FLTTH => FLTTH
+LHD => LHD
+Audies => Audies
+CtrlHD => CtrlHD
