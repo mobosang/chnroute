@@ -1,15 +1,28 @@
 # NAME: emby分流-直连
+# lily直连
 DOMAIN,cdn.lilyemby.com
+
+# 自建直连
 DOMAIN,emby.janine.cn
+DOMAIN,transapi.janine.cn
+
+# Peekabo 顶尖 HK CDN 线路（国内直连）
 DOMAIN,hkcdn.longemby.com
 DOMAIN,pkstream-hk.longemby.top
+
+# Peekabo 顶尖JP CDN线路（国内直连）
 DOMAIN,jpcdn.longemby.com
 DOMAIN,pkstream-jp.longemby.top
-DOMAIN,transapi.janine.cn
+
+# SCDN HK线路（国内直连）
 DOMAIN,hkscdn.longemby.com
 DOMAIN,scdnstream-hk.longemby.top
 
-
+# VeilX 国内直连自适应分流线路
+DOMAIN,veilx.longemby.com
+DOMAIN,stream-phoenix.longemby.top
+DOMAIN,stream-gomami-hk.longemby.top
+DOMAIN,stream-gomami2-hk.longemby.top
 
 
 
