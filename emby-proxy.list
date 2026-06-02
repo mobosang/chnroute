@@ -1,7 +1,5 @@
 # NAME: emby分流-代理
 DOMAIN,www.lilyemby.com
-DOMAIN,cfcdn.longemby.com
-DOMAIN,cfstream.longemby.top
 DOMAIN,emby.oceancloud.asia
 
 # CF long 非直连线路
