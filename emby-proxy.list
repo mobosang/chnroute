@@ -3,7 +3,13 @@ DOMAIN,www.lilyemby.com
 DOMAIN,cfcdn.longemby.com
 DOMAIN,cfstream.longemby.top
 DOMAIN,emby.oceancloud.asia
-DOMAIN,cf.longemby.com
-DOMAIN,cfstream.longemby.top
+
+# CF long 非直连线路
+DOMAIN,cfcdn.longemby.com
+DOMAIN,stream-phoenix.longemby.live
+DOMAIN,stream-gomami-hk.longemby.live
+DOMAIN,stream-gomami2-hk.longemby.live
+
+# CF long porn 非直连线路
 DOMAIN,erodougazo.com
 DOMAIN,9kg.longemby.com
