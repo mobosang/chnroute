@@ -3,6 +3,14 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.5:
+# - 修复: 增加端口校验、依赖逐项检查、配置白名单读取和卸载路径保护。
+# - 修复: 增强下载解压检查、公网 IP 获取失败兜底和脚本自更新检查。
+#
+# v3.5.4:
+# - 新增: 支持安装和管理 Snell v6.0.0 RC 服务端。
+# - 新增: Snell v6 支持 mode 参数 (default/unshaped/unsafe-raw)。
+#
 # v3.5.3:
 # - 新增: 自动创建快捷别名。首次安装成功后，会自动在 .bashrc/.zshrc 中创建快捷命令 's'。
 # - 新增: 跨 VPS 安装次数统计。通过向指定服务器端点发送匿名报告实现。
@@ -27,8 +35,9 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.3"
+SCRIPT_VERSION="3.5.5"
 SNELL_VERSION_FOR_INSTALL="v5.0.0" # 用于全新安装时的默认版本
+SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
 # --- 文件路径 (将在运行时动态生成) ---
 SNELL_INSTALL_DIR="/usr/local/bin"
@@ -43,9 +52,10 @@ USAGE_CONFIG_FILE="${USAGE_CONFIG_DIR}/usage.conf"
 FIRST_RUN_MARKER_FILE="${USAGE_CONFIG_DIR}/.install_reported" # 首次运行报告的标记文件
 
 # --- 下载链接 ---
-SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/zh/release-notes/snell"
+SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 SCRIPT_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-ai.sh"
 SNELL_V3_SPECIAL_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-server-v3.0.1-linux-amd64.zip"
+SNELL_V6_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_V6_VERSION_FOR_INSTALL}-linux-amd64.zip"
 # 【【【 重要配置 】】】 请将下面的 URL 替换为您自己的服务器端点
 COUNTER_ENDPOINT_URL="http://your-server-domain.com/counter.php"
 
@@ -72,6 +82,77 @@ check_root() {
         echo -e "${Red}错误：此脚本必须以 root 权限运行。${NC}"
         exit 1
     fi
+}
+
+load_manager_config() {
+    local config_file="${1:-$SCRIPT_CONFIG_FILE}"
+    if [[ ! -f "$config_file" ]]; then
+        return 1
+    fi
+
+    AGENT_NAME=""
+    SNELL_PORT=""
+    SNELL_PSK=""
+    SNELL_VERSION_INSTALLED=""
+    IS_V3_SPECIAL=""
+    SNELL_MODE=""
+    INSTANCE_SUFFIX=""
+
+    local key value
+    while IFS='=' read -r key value; do
+        value=${value%$'\r'}
+        if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+
+        case "$key" in
+            AGENT_NAME|SNELL_PORT|SNELL_PSK|SNELL_VERSION_INSTALLED|IS_V3_SPECIAL|SNELL_MODE|INSTANCE_SUFFIX)
+                printf -v "$key" '%s' "$value"
+                ;;
+        esac
+    done < "$config_file"
+}
+
+validate_port() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
+}
+
+download_snell_binary() {
+    local download_url="$1"
+    local target_path="$2"
+    local temp_zip temp_unzip_dir
+    temp_zip=$(mktemp)
+    temp_unzip_dir=$(mktemp -d)
+
+    if ! wget --timeout=30 --tries=3 -qO "$temp_zip" "$download_url"; then
+        rm -f "$temp_zip"
+        rm -rf "$temp_unzip_dir"
+        return 1
+    fi
+
+    if ! unzip -qo "$temp_zip" -d "$temp_unzip_dir"; then
+        rm -f "$temp_zip"
+        rm -rf "$temp_unzip_dir"
+        return 1
+    fi
+
+    rm -f "$temp_zip"
+    if [[ ! -f "${temp_unzip_dir}/snell-server" ]]; then
+        rm -rf "$temp_unzip_dir"
+        return 1
+    fi
+
+    if ! mv "${temp_unzip_dir}/snell-server" "$target_path"; then
+        rm -rf "$temp_unzip_dir"
+        return 1
+    fi
+    rm -rf "$temp_unzip_dir"
+}
+
+is_safe_instance_path() {
+    local path="$1"
+    [[ -n "$path" && "$path" =~ ^/etc/snell(-[0-9]+)?$ ]]
 }
 
 report_first_run() {
@@ -178,7 +259,7 @@ select_snell_instance() {
     existing_services=$(find /etc/systemd/system/ -maxdepth 1 -name "snell*.service" -exec basename {} \; 2>/dev/null | sort -V)
 
     if [[ -z "$existing_services" ]]; then
-        dialog --title "错误" --msgbox "未找到任何已安装的 Snell 实例。\n\n请先使用选项 1 或 2 进行安装。" 10 50
+        dialog --title "错误" --msgbox "未找到任何已安装的 Snell 实例。\n\n请先使用选项 1、2 或 3 进行安装。" 10 50
         return 1
     fi
 
@@ -213,17 +294,34 @@ select_snell_instance() {
 
 
 install_dependencies() {
-    if command -v dialog &> /dev/null; then return; fi
-    echo "正在安装必要的依赖 (dialog, curl, wget, unzip, openssl)..."
+    local deps=(dialog curl wget unzip openssl)
+    local missing_deps=()
+    local dep
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            missing_deps+=("$dep")
+        fi
+    done
+
+    if [[ ${#missing_deps[@]} -eq 0 ]]; then return; fi
+
+    echo "正在安装缺失依赖: ${missing_deps[*]}"
     if command -v apt-get &> /dev/null; then
-        apt-get update >/dev/null 2>&1; apt-get install -y dialog curl wget unzip openssl >/dev/null 2>&1
+        apt-get update >/dev/null 2>&1; apt-get install -y "${missing_deps[@]}" >/dev/null 2>&1
     elif command -v yum &> /dev/null; then
-        yum install -y epel-release >/dev/null 2>&1; yum install -y dialog curl wget unzip openssl >/dev/null 2>&1
+        yum install -y epel-release >/dev/null 2>&1; yum install -y "${missing_deps[@]}" >/dev/null 2>&1
     elif command -v dnf &> /dev/null; then
-        dnf install -y epel-release >/dev/null 2>&1; dnf install -y dialog curl wget unzip openssl >/dev/null 2>&1
+        dnf install -y epel-release >/dev/null 2>&1; dnf install -y "${missing_deps[@]}" >/dev/null 2>&1
     else
         echo -e "${Red}无法确定包管理器，请手动安装: dialog, curl, wget, unzip, openssl${NC}"; exit 1
     fi
+
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            echo -e "${Red}依赖安装失败或不可用: ${dep}${NC}"
+            exit 1
+        fi
+    done
 }
 
 open_firewall_ports() {
@@ -271,6 +369,10 @@ _install_or_modify_logic() {
     local download_url="$2"
     local special_flag="$3" # true or false for v3
     local mode="$4" # "new" or "modify"
+    local is_v6=false
+    if [[ "$install_version" == v6* ]]; then
+        is_v6=true
+    fi
 
     if [[ "$mode" == "new" ]]; then
         local existing_services
@@ -302,39 +404,47 @@ _install_or_modify_logic() {
     fi
 
     # Load existing config if in modify mode
-    local agent_name="MyNode${instance_suffix}"; local snell_port="36139";
+    local agent_name="MyNode${instance_suffix}"; local snell_port="36139"; local snell_mode="default";
     if [[ "$mode" == "modify" ]] && [[ -f "$SCRIPT_CONFIG_FILE" ]]; then
-        source "$SCRIPT_CONFIG_FILE"
-        agent_name=$AGENT_NAME; snell_port=$SNELL_PORT;
+        load_manager_config "$SCRIPT_CONFIG_FILE"
+        agent_name=$AGENT_NAME; snell_port=$SNELL_PORT; snell_mode=${SNELL_MODE:-default};
     elif [[ -n "$instance_suffix" ]]; then # Suggest different ports for new coexisting instances
         local num=${instance_suffix#-}
         snell_port=$((36139 + num - 1))
     fi
 
     local form_items=("节点名称:" 1 1 "$agent_name" 1 28 40 0 "Snell 端口 (对外):" 2 1 "$snell_port" 2 28 40 0)
+    local form_height=12
+    local form_rows=4
+    if [[ "$is_v6" == "true" ]]; then
+        form_items+=("Snell v6 mode:" 3 1 "$snell_mode" 3 28 40 0)
+        form_height=14
+        form_rows=5
+    fi
 
-    local form_output; form_output=$(dialog --clear --backtitle "Snell 安装向导" --title "参数配置 (实例: ${SNELL_SERVICE_NAME})" --form "请输入以下参数:" 12 75 4 "${form_items[@]}" 3>&1 1>&2 2>&3)
+    local form_output; form_output=$(dialog --clear --backtitle "Snell 安装向导" --title "参数配置 (实例: ${SNELL_SERVICE_NAME})" --form "请输入以下参数:" "$form_height" 75 "$form_rows" "${form_items[@]}" 3>&1 1>&2 2>&3)
     if [[ -z "$form_output" ]]; then echo "取消操作。"; return 1; fi
 
     AGENT_NAME=$(echo "$form_output" | sed -n '1p')
     SNELL_PORT=$(echo "$form_output" | sed -n '2p')
+    SNELL_MODE=$(echo "$form_output" | sed -n '3p')
+    SNELL_MODE=${SNELL_MODE:-default}
+    if ! validate_port "$SNELL_PORT"; then
+        dialog --title "错误" --msgbox "Snell 端口必须是 1-65535 之间的数字。" 8 60
+        return 1
+    fi
+    if [[ "$is_v6" == "true" && ! "$SNELL_MODE" =~ ^(default|unshaped|unsafe-raw)$ ]]; then
+        dialog --title "错误" --msgbox "Snell v6 mode 只能是: default、unshaped、unsafe-raw。" 8 70
+        return 1
+    fi
     
     clear; echo "开始准备环境 (实例: ${SNELL_SERVICE_NAME})..."; if [[ -f "$SNELL_SERVICE_FILE" ]]; then systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1; fi
     mkdir -p "$SNELL_INSTALL_DIR" "$SNELL_CONFIG_DIR"
 
     echo "正在下载 Snell Server (${install_version})..."
-    local temp_zip; temp_zip=$(mktemp)
-    if ! wget -qO "$temp_zip" "$download_url"; then
-        dialog --title "错误" --msgbox "下载 Snell Server 失败！\n请检查网络。" 10 60; rm -f "$temp_zip"; return 1
-    fi
-    local temp_unzip_dir; temp_unzip_dir=$(mktemp -d)
-    unzip -qo "$temp_zip" -d "$temp_unzip_dir"; rm -f "$temp_zip"
-    mv "${temp_unzip_dir}/snell-server" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
-    rm -r "$temp_unzip_dir"
-
-
-    if [[ ! -f "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}" ]]; then
-        dialog --title "错误" --msgbox "Snell Server 安装失败！\n找不到文件 '${SNELL_BINARY_NAME}'。" 12 70; return 1
+    if ! download_snell_binary "$download_url" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; then
+        dialog --title "错误" --msgbox "Snell Server 下载或解压失败！\n请检查网络和下载地址。" 10 70
+        return 1
     fi
     chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; echo -e "${Green}Snell Server 二进制文件 (${SNELL_BINARY_NAME}) 准备就绪。${NC}"
 
@@ -347,6 +457,10 @@ listen = 0.0.0.0:${SNELL_PORT}
 psk = ${SNELL_PSK}
 ipv6 = false
 EOF
+
+    if [[ "$is_v6" == "true" ]]; then
+        echo "mode = ${SNELL_MODE}" >> "$SNELL_CONFIG_FILE"
+    fi
 
     local service_user_line="DynamicUser=yes"; local snell_user="snell${instance_suffix}"; if [[ -f /etc/os-release ]]; then source /etc/os-release; if [[ "$ID" == "centos" && "$VERSION_ID" == "7" ]]; then echo "检测到 CentOS 7，使用静态用户 '${snell_user}'。"; if ! id "${snell_user}" &>/dev/null; then useradd -r -s /bin/false "${snell_user}"; fi; service_user_line="User=${snell_user}"; fi; fi
     cat > "$SNELL_SERVICE_FILE" << EOF
@@ -370,6 +484,7 @@ SNELL_PORT="${SNELL_PORT}"
 SNELL_PSK="${SNELL_PSK}"
 SNELL_VERSION_INSTALLED="${install_version}"
 IS_V3_SPECIAL=${special_flag}
+SNELL_MODE="${SNELL_MODE}"
 INSTANCE_SUFFIX="${instance_suffix}"
 EOF
 
@@ -400,6 +515,10 @@ do_install_latest() {
     _install_or_modify_logic "$SNELL_VERSION_FOR_INSTALL" "$snell_url" "false" "new"
 }
 
+do_install_v6() {
+    _install_or_modify_logic "$SNELL_V6_VERSION_FOR_INSTALL" "$SNELL_V6_URL" "false" "new"
+}
+
 do_install_v3_special() {
     _install_or_modify_logic "v3.0.1 (兼容版)" "$SNELL_V3_SPECIAL_URL" "true" "new"
 }
@@ -409,7 +528,7 @@ do_modify_config() {
     
     local current_version; local is_v3_special_flag;
     if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then
-        source "$SCRIPT_CONFIG_FILE"
+        load_manager_config "$SCRIPT_CONFIG_FILE"
         current_version="$SNELL_VERSION_INSTALLED"
         is_v3_special_flag="$IS_V3_SPECIAL"
     else
@@ -431,7 +550,8 @@ do_update_snell() {
     if ! select_snell_instance "更新 Snell 版本"; then return; fi
     
     local snell_version_installed;
-    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then source "$SCRIPT_CONFIG_FILE"; else echo "配置缺失"; return; fi
+    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then load_manager_config "$SCRIPT_CONFIG_FILE"; else echo "配置缺失"; return; fi
+    snell_version_installed="$SNELL_VERSION_INSTALLED"
     
     clear; echo -e "${Yellow}正在为实例 ${SNELL_SERVICE_NAME} 检查最新版本...${NC}"; local remote_version; remote_version=$(get_latest_snell_version)
     if [[ "$remote_version" == "error" || -z "$remote_version" ]]; then dialog --title "错误" --msgbox "获取远程版本信息失败！" 10 50; return; fi
@@ -442,17 +562,25 @@ do_update_snell() {
     if [[ $? -ne 0 ]]; then return; fi
     
     clear; echo "准备更新..."; systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1
-    echo "下载新版本 Snell Server (${remote_version})..."; local temp_zip; temp_zip=$(mktemp)
+    echo "下载新版本 Snell Server (${remote_version})..."
     local NEW_SNELL_URL="https://dl.nssurge.com/snell/snell-server-${remote_version}-linux-amd64.zip"
-    if ! wget -qO "$temp_zip" "$NEW_SNELL_URL"; then echo "下载失败"; press_any_key; return; fi
-    
-    local temp_unzip_dir; temp_unzip_dir=$(mktemp -d)
-    unzip -qo "$temp_zip" -d "$temp_unzip_dir"; rm -f "$temp_zip"
-    mv "${temp_unzip_dir}/snell-server" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; rm -r "$temp_unzip_dir"
+    if ! download_snell_binary "$NEW_SNELL_URL" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; then echo "下载或解压失败"; press_any_key; return; fi
 
     chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
     sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${remote_version}\"/" "$SCRIPT_CONFIG_FILE"
     sed -i "s/^IS_V3_SPECIAL=.*/IS_V3_SPECIAL=false/" "$SCRIPT_CONFIG_FILE"
+    if [[ "$remote_version" == v6* ]]; then
+        if grep -q '^SNELL_MODE=' "$SCRIPT_CONFIG_FILE"; then
+            sed -i 's/^SNELL_MODE=.*/SNELL_MODE="default"/' "$SCRIPT_CONFIG_FILE"
+        else
+            echo 'SNELL_MODE="default"' >> "$SCRIPT_CONFIG_FILE"
+        fi
+        if ! grep -q '^mode = ' "$SNELL_CONFIG_FILE"; then
+            echo "mode = default" >> "$SNELL_CONFIG_FILE"
+        fi
+    else
+        sed -i '/^mode = /d' "$SNELL_CONFIG_FILE"
+    fi
     echo "重启服务..."; do_restart
     echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 已成功更新至 ${remote_version}！${NC}"; press_any_key
 }
@@ -461,7 +589,8 @@ do_rollback_snell() {
     if ! select_snell_instance "更换 Snell 版本"; then return; fi
     
     local snell_version_installed;
-    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then source "$SCRIPT_CONFIG_FILE"; else echo "配置缺失"; return; fi
+    if [[ -f "$SCRIPT_CONFIG_FILE" ]]; then load_manager_config "$SCRIPT_CONFIG_FILE"; else echo "配置缺失"; return; fi
+    snell_version_installed="$SNELL_VERSION_INSTALLED"
 
     clear; echo "获取可用版本..."; local available_versions; available_versions=$(get_available_versions)
     if [[ "$available_versions" == "error" || -z "$available_versions" ]]; then dialog --title "错误" --msgbox "获取版本列表失败！" 10 50; return; fi
@@ -478,16 +607,23 @@ do_rollback_snell() {
 
     clear; echo "准备更换..."; systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1
     local ROLLBACK_URL="https://dl.nssurge.com/snell/snell-server-${selected_version}-linux-amd64.zip"
-    local temp_zip; temp_zip=$(mktemp)
-    if ! wget -qO "$temp_zip" "$ROLLBACK_URL"; then echo "下载失败"; press_any_key; return; fi
-    
-    local temp_unzip_dir; temp_unzip_dir=$(mktemp -d)
-    unzip -qo "$temp_zip" -d "$temp_unzip_dir"; rm -f "$temp_zip"
-    mv "${temp_unzip_dir}/snell-server" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; rm -r "$temp_unzip_dir"
+    if ! download_snell_binary "$ROLLBACK_URL" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; then echo "下载或解压失败"; press_any_key; return; fi
     
     chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
     sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${selected_version}\"/" "$SCRIPT_CONFIG_FILE"
     sed -i "s/^IS_V3_SPECIAL=.*/IS_V3_SPECIAL=false/" "$SCRIPT_CONFIG_FILE"
+    if [[ "$selected_version" == v6* ]]; then
+        if grep -q '^SNELL_MODE=' "$SCRIPT_CONFIG_FILE"; then
+            sed -i 's/^SNELL_MODE=.*/SNELL_MODE="default"/' "$SCRIPT_CONFIG_FILE"
+        else
+            echo 'SNELL_MODE="default"' >> "$SCRIPT_CONFIG_FILE"
+        fi
+        if ! grep -q '^mode = ' "$SNELL_CONFIG_FILE"; then
+            echo "mode = default" >> "$SNELL_CONFIG_FILE"
+        fi
+    else
+        sed -i '/^mode = /d' "$SNELL_CONFIG_FILE"
+    fi
     echo "重启服务..."; do_restart
     echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 已成功更换至 ${selected_version}！${NC}"; press_any_key
 }
@@ -502,6 +638,12 @@ do_uninstall_menu() {
 }
 
 _perform_uninstall() {
+    if ! is_safe_instance_path "$SNELL_CONFIG_DIR"; then
+        echo -e "${Red}检测到异常配置目录，已取消卸载: ${SNELL_CONFIG_DIR}${NC}"
+        press_any_key
+        return 1
+    fi
+
     clear; echo "正在卸载实例 ${SNELL_SERVICE_NAME}..."
     echo "--> 停止并禁用服务..."
     systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1
@@ -518,6 +660,12 @@ _perform_uninstall() {
     
     echo "--> 重新加载 systemd..."
     systemctl daemon-reload
+
+    if [[ -z $(find /etc/systemd/system/ -maxdepth 1 -name "snell*.service" -print -quit 2>/dev/null) ]]; then
+        echo "--> 未检测到其他 Snell 实例，清理内核调优配置..."
+        sed -i -e '/# Kernel network tuning by Snell manager script/,+4d' /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+    fi
     
     echo -e "\n${Green}实例 ${SNELL_SERVICE_NAME} 已成功卸载！${NC}"
     press_any_key
@@ -562,7 +710,7 @@ view_config() {
         dialog --title "错误" --msgbox "找不到实例 ${SNELL_SERVICE_NAME} 的管理配置文件。" 8 60
         return
     fi
-    source "$SCRIPT_CONFIG_FILE"
+    load_manager_config "$SCRIPT_CONFIG_FILE"
 
     local snell_major_version
     if [[ "$IS_V3_SPECIAL" == "true" ]]; then
@@ -572,8 +720,16 @@ view_config() {
         snell_major_version=${temp_version%%.*}
     fi
     
-    local public_ip; public_ip=$(curl -s4 ifconfig.me)
+    local public_ip; public_ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me)
+    if [[ -z "$public_ip" ]]; then
+        public_ip="YOUR_SERVER_IP"
+        echo -e "${Yellow}无法自动获取公网 IPv4，客户端配置中将使用占位地址 YOUR_SERVER_IP。${NC}"
+        sleep 1
+    fi
     local final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${SNELL_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true"
+    if [[ "$snell_major_version" == "6" ]]; then
+        final_config_string="${final_config_string}, mode=${SNELL_MODE:-default}"
+    fi
     
     dialog --title "客户端配置 (${SNELL_SERVICE_NAME})" --msgbox "关闭此窗口后，配置将打印在终端。" 8 70
     
@@ -592,12 +748,14 @@ view_log() {
 
 update_script() {
     clear; echo "正在检查更新..."; local local_version=$SCRIPT_VERSION
-    local remote_version; remote_version=$(curl -sL "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
+    local remote_version; remote_version=$(curl -fsSL --connect-timeout 10 --max-time 30 "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
     if [[ -z "$remote_version" ]]; then echo -e "${Red}获取远程版本信息失败。${NC}"; press_any_key; return; fi
     local latest_version; latest_version=$(printf "%s\n%s" "$local_version" "$remote_version" | sort -V | tail -n 1)
     if [[ "$latest_version" == "$local_version" ]]; then echo -e "${Green}恭喜！当前已是最新版本 (${local_version})。${NC}"; else
-        echo -e "${Yellow}发现新版本: ${remote_version}，正在更新...${NC}"; local script_path="$0"
-        if ! curl -sL "${SCRIPT_URL}" -o "${script_path}"; then echo -e "${Red}下载新脚本失败！${NC}"; press_any_key; return; fi
+        echo -e "${Yellow}发现新版本: ${remote_version}，正在更新...${NC}"; local script_path="$0"; local temp_script; temp_script=$(mktemp)
+        if ! curl -fsSL --connect-timeout 10 --max-time 30 "${SCRIPT_URL}" -o "$temp_script"; then echo -e "${Red}下载新脚本失败！${NC}"; rm -f "$temp_script"; press_any_key; return; fi
+        if ! grep -q '^SCRIPT_VERSION=' "$temp_script" || ! grep -q '^main "\$@"' "$temp_script"; then echo -e "${Red}下载的新脚本内容校验失败，已取消更新。${NC}"; rm -f "$temp_script"; press_any_key; return; fi
+        mv "$temp_script" "${script_path}"
         chmod +x "${script_path}"; echo -e "${Green}脚本已更新至 ${remote_version}！正在重新运行...${NC}"; sleep 2; exec "${script_path}"
     fi; press_any_key
 }
@@ -610,22 +768,23 @@ show_menu() {
     echo -e "Snell Server 多实例管理脚本 (纯净版) [v${SCRIPT_VERSION}]"; echo -e "================================================="
     echo -e "${Green}0.${NC} 更新脚本"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}1.${NC} 安装 Snell Server (最新 v5.0.0)"
-    echo -e "${Yellow}2.${NC} 安装 Snell v3.0.1 (兼容版)"
+    echo -e "${Green}1.${NC} 安装 Snell Server (v5.0.0)"
+    echo -e "${Green}2.${NC} 安装 Snell v6.0.0 RC"
+    echo -e "${Yellow}3.${NC} 安装 Snell v3.0.1 (兼容版)"
     echo -e "-------------------------------------------------"
-    echo -e "${Yellow}3.${NC} 更新一个实例的版本"
-    echo -e "${Yellow}4.${NC} 更换一个实例的版本"
-    echo -e "${Red}5.${NC} 卸载一个 Snell 实例"
+    echo -e "${Yellow}4.${NC} 更新一个实例的版本"
+    echo -e "${Yellow}5.${NC} 更换一个实例的版本"
+    echo -e "${Red}6.${NC} 卸载一个 Snell 实例"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}6.${NC} 启动一个实例"
-    echo -e "${Green}7.${NC} 停止一个实例"
-    echo -e "${Green}8.${NC} 重启一个实例"
+    echo -e "${Green}7.${NC} 启动一个实例"
+    echo -e "${Green}8.${NC} 停止一个实例"
+    echo -e "${Green}9.${NC} 重启一个实例"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}9.${NC} 修改一个实例的配置"
-    echo -e "${Green}10.${NC} 查看一个实例的配置"
-    echo -e "${Green}11.${NC} 查看一个实例的日志"
+    echo -e "${Green}10.${NC} 修改一个实例的配置"
+    echo -e "${Green}11.${NC} 查看一个实例的配置"
+    echo -e "${Green}12.${NC} 查看一个实例的日志"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}12.${NC} 退出脚本"
+    echo -e "${Green}13.${NC} 退出脚本"
     echo -e "================================================="
     echo -e "当前已安装实例数量: ${Green}${instance_count}${NC}"
     echo -e "总计使用: ${Yellow}${total_usage_count}${NC} 次 | 本日使用: ${Yellow}${today_usage_count}${NC} 次"
@@ -639,21 +798,22 @@ main() {
     update_usage_stats
     while true; do
         show_menu
-        read -p "请输入数字 [0-12]: " choice
+        read -p "请输入数字 [0-13]: " choice
         case "$choice" in
             0) update_script ;; 
             1) do_install_latest ;; 
-            2) do_install_v3_special ;;
-            3) do_update_snell ;;
-            4) do_rollback_snell ;;
-            5) do_uninstall_menu ;;
-            6) do_start ;;
-            7) do_stop ;;
-            8) do_restart; press_any_key ;;
-            9) do_modify_config ;;
-            10) view_config ;;
-            11) view_log ;;
-            12) exit 0 ;;
+            2) do_install_v6 ;;
+            3) do_install_v3_special ;;
+            4) do_update_snell ;;
+            5) do_rollback_snell ;;
+            6) do_uninstall_menu ;;
+            7) do_start ;;
+            8) do_stop ;;
+            9) do_restart; press_any_key ;;
+            10) do_modify_config ;;
+            11) view_config ;;
+            12) view_log ;;
+            13) exit 0 ;;
             *) echo -e "${Red}无效输入。${NC}"; sleep 1 ;;
         esac
     done
