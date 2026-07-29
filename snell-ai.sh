@@ -3,6 +3,10 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.6:
+# - 新增: 安装和修改配置时支持选择 IPv4、IPv6、IPv4+IPv6。
+# - 新增: 安装菜单版本号从 Surge 官方 Snell release notes 动态获取。
+#
 # v3.5.5:
 # - 修复: 增加端口校验、依赖逐项检查、配置白名单读取和卸载路径保护。
 # - 修复: 增强下载解压检查、公网 IP 获取失败兜底和脚本自更新检查。
@@ -35,8 +39,8 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.5"
-SNELL_VERSION_FOR_INSTALL="v5.0.0" # 用于全新安装时的默认版本
+SCRIPT_VERSION="3.5.6"
+SNELL_VERSION_FOR_INSTALL="v5.0.1" # 官网版本获取失败时的默认稳定版本
 SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
 # --- 文件路径 (将在运行时动态生成) ---
@@ -70,6 +74,8 @@ NC="\033[0m"
 instance_suffix="" # 后缀, e.g., "" for default, "-2", "-3"
 total_usage_count=0 # 总计使用次数
 today_usage_count=0 # 本日使用次数
+latest_snell_version_cache=""
+latest_snell_v6_version_cache=""
 
 # --- 工具函数 ---
 press_any_key() {
@@ -96,6 +102,7 @@ load_manager_config() {
     SNELL_VERSION_INSTALLED=""
     IS_V3_SPECIAL=""
     SNELL_MODE=""
+    SNELL_IP_STACK=""
     INSTANCE_SUFFIX=""
 
     local key value
@@ -106,7 +113,7 @@ load_manager_config() {
         fi
 
         case "$key" in
-            AGENT_NAME|SNELL_PORT|SNELL_PSK|SNELL_VERSION_INSTALLED|IS_V3_SPECIAL|SNELL_MODE|INSTANCE_SUFFIX)
+            AGENT_NAME|SNELL_PORT|SNELL_PSK|SNELL_VERSION_INSTALLED|IS_V3_SPECIAL|SNELL_MODE|SNELL_IP_STACK|INSTANCE_SUFFIX)
                 printf -v "$key" '%s' "$value"
                 ;;
         esac
@@ -116,6 +123,36 @@ load_manager_config() {
 validate_port() {
     local port="$1"
     [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
+}
+
+validate_ip_stack() {
+    local ip_stack="$1"
+    [[ "$ip_stack" =~ ^(ipv4|ipv6|ipv4\+ipv6)$ ]]
+}
+
+get_snell_listen_address() {
+    local ip_stack="$1"
+    case "$ip_stack" in
+        ipv6) echo "[::]" ;;
+        ipv4+ipv6) echo "[::]" ;;
+        *) echo "0.0.0.0" ;;
+    esac
+}
+
+get_snell_extra_listen_address() {
+    local ip_stack="$1"
+    case "$ip_stack" in
+        ipv4+ipv6) echo "[::]" ;;
+        *) echo "" ;;
+    esac
+}
+
+get_snell_ipv6_enabled() {
+    local ip_stack="$1"
+    case "$ip_stack" in
+        ipv6|ipv4+ipv6) echo "true" ;;
+        *) echo "false" ;;
+    esac
 }
 
 download_snell_binary() {
@@ -359,6 +396,46 @@ get_latest_snell_version() {
     if [[ -z "$version" ]]; then echo "error"; else echo "$version"; fi
 }
 
+get_latest_stable_snell_version() {
+    local version; version=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v[0-9]+\.[0-9]+\.[0-9]+(?=-linux-)' | sort -uV | tail -n 1)
+    if [[ -z "$version" ]]; then echo "error"; else echo "$version"; fi
+}
+
+get_latest_snell_v6_version() {
+    local version; version=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v6[^-]+' | sort -uV | tail -n 1)
+    if [[ -z "$version" ]]; then echo "error"; else echo "$version"; fi
+}
+
+get_install_snell_version() {
+    if [[ -n "$latest_snell_version_cache" ]]; then
+        echo "$latest_snell_version_cache"
+        return
+    fi
+
+    local version; version=$(get_latest_stable_snell_version)
+    if [[ "$version" == "error" || -z "$version" ]]; then
+        latest_snell_version_cache="$SNELL_VERSION_FOR_INSTALL"
+    else
+        latest_snell_version_cache="$version"
+    fi
+    echo "$latest_snell_version_cache"
+}
+
+get_install_snell_v6_version() {
+    if [[ -n "$latest_snell_v6_version_cache" ]]; then
+        echo "$latest_snell_v6_version_cache"
+        return
+    fi
+
+    local version; version=$(get_latest_snell_v6_version)
+    if [[ "$version" == "error" || -z "$version" ]]; then
+        latest_snell_v6_version_cache="$SNELL_V6_VERSION_FOR_INSTALL"
+    else
+        latest_snell_v6_version_cache="$version"
+    fi
+    echo "$latest_snell_v6_version_cache"
+}
+
 get_available_versions() {
     local versions; versions=$(curl -sL --connect-timeout 10 "$SNELL_RELEASE_NOTES_URL" | grep -oP '(?<=snell-server-)v[^-]+' | sort -urV)
     if [[ -z "$versions" ]]; then echo "error"; else echo "$versions"; fi
@@ -404,22 +481,22 @@ _install_or_modify_logic() {
     fi
 
     # Load existing config if in modify mode
-    local agent_name="MyNode${instance_suffix}"; local snell_port="36139"; local snell_mode="default";
+    local agent_name="MyNode${instance_suffix}"; local snell_port="36139"; local snell_mode="default"; local snell_ip_stack="ipv4";
     if [[ "$mode" == "modify" ]] && [[ -f "$SCRIPT_CONFIG_FILE" ]]; then
         load_manager_config "$SCRIPT_CONFIG_FILE"
-        agent_name=$AGENT_NAME; snell_port=$SNELL_PORT; snell_mode=${SNELL_MODE:-default};
+        agent_name=$AGENT_NAME; snell_port=$SNELL_PORT; snell_mode=${SNELL_MODE:-default}; snell_ip_stack=${SNELL_IP_STACK:-ipv4};
     elif [[ -n "$instance_suffix" ]]; then # Suggest different ports for new coexisting instances
         local num=${instance_suffix#-}
         snell_port=$((36139 + num - 1))
     fi
 
-    local form_items=("节点名称:" 1 1 "$agent_name" 1 28 40 0 "Snell 端口 (对外):" 2 1 "$snell_port" 2 28 40 0)
-    local form_height=12
-    local form_rows=4
+    local form_items=("节点名称:" 1 1 "$agent_name" 1 28 40 0 "Snell 端口 (对外):" 2 1 "$snell_port" 2 28 40 0 "IP 栈 (ipv4/ipv6/ipv4+ipv6):" 3 1 "$snell_ip_stack" 3 28 40 0)
+    local form_height=14
+    local form_rows=5
     if [[ "$is_v6" == "true" ]]; then
-        form_items+=("Snell v6 mode:" 3 1 "$snell_mode" 3 28 40 0)
-        form_height=14
-        form_rows=5
+        form_items+=("Snell v6 mode:" 4 1 "$snell_mode" 4 28 40 0)
+        form_height=16
+        form_rows=6
     fi
 
     local form_output; form_output=$(dialog --clear --backtitle "Snell 安装向导" --title "参数配置 (实例: ${SNELL_SERVICE_NAME})" --form "请输入以下参数:" "$form_height" 75 "$form_rows" "${form_items[@]}" 3>&1 1>&2 2>&3)
@@ -427,10 +504,16 @@ _install_or_modify_logic() {
 
     AGENT_NAME=$(echo "$form_output" | sed -n '1p')
     SNELL_PORT=$(echo "$form_output" | sed -n '2p')
-    SNELL_MODE=$(echo "$form_output" | sed -n '3p')
+    SNELL_IP_STACK=$(echo "$form_output" | sed -n '3p')
+    SNELL_MODE=$(echo "$form_output" | sed -n '4p')
+    SNELL_IP_STACK=${SNELL_IP_STACK:-ipv4}
     SNELL_MODE=${SNELL_MODE:-default}
     if ! validate_port "$SNELL_PORT"; then
         dialog --title "错误" --msgbox "Snell 端口必须是 1-65535 之间的数字。" 8 60
+        return 1
+    fi
+    if ! validate_ip_stack "$SNELL_IP_STACK"; then
+        dialog --title "错误" --msgbox "IP 栈只能是: ipv4、ipv6、ipv4+ipv6。" 8 60
         return 1
     fi
     if [[ "$is_v6" == "true" && ! "$SNELL_MODE" =~ ^(default|unshaped|unsafe-raw)$ ]]; then
@@ -448,15 +531,26 @@ _install_or_modify_logic() {
     fi
     chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; echo -e "${Green}Snell Server 二进制文件 (${SNELL_BINARY_NAME}) 准备就绪。${NC}"
 
-    echo "正在写入配置文件..."; local SNELL_PSK=$(openssl rand -base64 18);
+    echo "正在写入配置文件..."; local SNELL_PSK=$(openssl rand -base64 18); local listen_address; local extra_listen_address; local ipv6_enabled;
+    listen_address=$(get_snell_listen_address "$SNELL_IP_STACK")
+    extra_listen_address=$(get_snell_extra_listen_address "$SNELL_IP_STACK")
+    ipv6_enabled=$(get_snell_ipv6_enabled "$SNELL_IP_STACK")
+    if [[ "$is_v6" == "true" && "$SNELL_IP_STACK" == "ipv4+ipv6" ]]; then
+        listen_address="0.0.0.0"
+    fi
     
     cat > "$SNELL_CONFIG_FILE" << EOF
 [snell-server]
 dns = 1.1.1.1, 9.9.9.9
-listen = 0.0.0.0:${SNELL_PORT}
 psk = ${SNELL_PSK}
-ipv6 = false
+ipv6 = ${ipv6_enabled}
 EOF
+
+    if [[ "$is_v6" == "true" && -n "$extra_listen_address" ]]; then
+        sed -i "/^dns = /a listen = ${listen_address}:${SNELL_PORT}, ${extra_listen_address}:${SNELL_PORT}" "$SNELL_CONFIG_FILE"
+    else
+        sed -i "/^dns = /a listen = ${listen_address}:${SNELL_PORT}" "$SNELL_CONFIG_FILE"
+    fi
 
     if [[ "$is_v6" == "true" ]]; then
         echo "mode = ${SNELL_MODE}" >> "$SNELL_CONFIG_FILE"
@@ -485,6 +579,7 @@ SNELL_PSK="${SNELL_PSK}"
 SNELL_VERSION_INSTALLED="${install_version}"
 IS_V3_SPECIAL=${special_flag}
 SNELL_MODE="${SNELL_MODE}"
+SNELL_IP_STACK="${SNELL_IP_STACK}"
 INSTANCE_SUFFIX="${instance_suffix}"
 EOF
 
@@ -511,12 +606,15 @@ EOF
 }
 
 do_install_latest() {
-    local snell_url="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION_FOR_INSTALL}-linux-amd64.zip"
-    _install_or_modify_logic "$SNELL_VERSION_FOR_INSTALL" "$snell_url" "false" "new"
+    local install_version; install_version=$(get_install_snell_version)
+    local snell_url="https://dl.nssurge.com/snell/snell-server-${install_version}-linux-amd64.zip"
+    _install_or_modify_logic "$install_version" "$snell_url" "false" "new"
 }
 
 do_install_v6() {
-    _install_or_modify_logic "$SNELL_V6_VERSION_FOR_INSTALL" "$SNELL_V6_URL" "false" "new"
+    local install_version; install_version=$(get_install_snell_v6_version)
+    local snell_url="https://dl.nssurge.com/snell/snell-server-${install_version}-linux-amd64.zip"
+    _install_or_modify_logic "$install_version" "$snell_url" "false" "new"
 }
 
 do_install_v3_special() {
@@ -720,10 +818,23 @@ view_config() {
         snell_major_version=${temp_version%%.*}
     fi
     
-    local public_ip; public_ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me)
+    local public_ip ip_stack; ip_stack=${SNELL_IP_STACK:-ipv4}
+    if [[ "$ip_stack" == "ipv6" ]]; then
+        public_ip=$(curl -s6 --connect-timeout 5 --max-time 10 ifconfig.me)
+        if [[ -n "$public_ip" ]]; then
+            public_ip="[${public_ip}]"
+        fi
+    else
+        public_ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me)
+    fi
     if [[ -z "$public_ip" ]]; then
-        public_ip="YOUR_SERVER_IP"
-        echo -e "${Yellow}无法自动获取公网 IPv4，客户端配置中将使用占位地址 YOUR_SERVER_IP。${NC}"
+        if [[ "$ip_stack" == "ipv6" ]]; then
+            public_ip="[YOUR_SERVER_IPV6]"
+            echo -e "${Yellow}无法自动获取公网 IPv6，客户端配置中将使用占位地址 [YOUR_SERVER_IPV6]。${NC}"
+        else
+            public_ip="YOUR_SERVER_IP"
+            echo -e "${Yellow}无法自动获取公网 IPv4，客户端配置中将使用占位地址 YOUR_SERVER_IP。${NC}"
+        fi
         sleep 1
     fi
     local final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${SNELL_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true"
@@ -762,14 +873,16 @@ update_script() {
 
 show_menu() {
     clear
-    local instance_count
+    local instance_count install_version install_v6_version
     instance_count=$(find /etc/systemd/system/ -maxdepth 1 -name "snell*.service" 2>/dev/null | wc -l)
+    install_version=$(get_install_snell_version)
+    install_v6_version=$(get_install_snell_v6_version)
 
     echo -e "Snell Server 多实例管理脚本 (纯净版) [v${SCRIPT_VERSION}]"; echo -e "================================================="
     echo -e "${Green}0.${NC} 更新脚本"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}1.${NC} 安装 Snell Server (v5.0.0)"
-    echo -e "${Green}2.${NC} 安装 Snell v6.0.0 RC"
+    echo -e "${Green}1.${NC} 安装 Snell Server (${install_version})"
+    echo -e "${Green}2.${NC} 安装 Snell v6 (${install_v6_version})"
     echo -e "${Yellow}3.${NC} 安装 Snell v3.0.1 (兼容版)"
     echo -e "-------------------------------------------------"
     echo -e "${Yellow}4.${NC} 更新一个实例的版本"
