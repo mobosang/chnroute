@@ -3,6 +3,9 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.7:
+# - 修复: IPv4+IPv6 配置完成后输出单条双栈客户端节点信息。
+#
 # v3.5.6:
 # - 新增: 安装和修改配置时支持选择 IPv4、IPv6、IPv4+IPv6。
 # - 新增: 安装菜单版本号从 Surge 官方 Snell release notes 动态获取。
@@ -39,7 +42,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.6"
+SCRIPT_VERSION="3.5.7"
 SNELL_VERSION_FOR_INSTALL="v5.0.1" # 官网版本获取失败时的默认稳定版本
 SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
@@ -818,26 +821,45 @@ view_config() {
         snell_major_version=${temp_version%%.*}
     fi
     
-    local public_ip ip_stack; ip_stack=${SNELL_IP_STACK:-ipv4}
-    if [[ "$ip_stack" == "ipv6" ]]; then
-        public_ip=$(curl -s6 --connect-timeout 5 --max-time 10 ifconfig.me)
-        if [[ -n "$public_ip" ]]; then
-            public_ip="[${public_ip}]"
-        fi
-    else
-        public_ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me)
-    fi
-    if [[ -z "$public_ip" ]]; then
-        if [[ "$ip_stack" == "ipv6" ]]; then
-            public_ip="[YOUR_SERVER_IPV6]"
-            echo -e "${Yellow}无法自动获取公网 IPv6，客户端配置中将使用占位地址 [YOUR_SERVER_IPV6]。${NC}"
-        else
-            public_ip="YOUR_SERVER_IP"
+    local ip_stack public_ipv4 public_ipv6 public_ipv6_raw proxy_host final_config_string; ip_stack=${SNELL_IP_STACK:-ipv4}
+    if [[ "$ip_stack" == "ipv4" || "$ip_stack" == "ipv4+ipv6" ]]; then
+        public_ipv4=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me)
+        if [[ -z "$public_ipv4" ]]; then
+            public_ipv4="YOUR_SERVER_IP"
             echo -e "${Yellow}无法自动获取公网 IPv4，客户端配置中将使用占位地址 YOUR_SERVER_IP。${NC}"
+            sleep 1
         fi
+    fi
+    if [[ "$ip_stack" == "ipv6" || "$ip_stack" == "ipv4+ipv6" ]]; then
+        public_ipv6=$(curl -s6 --connect-timeout 5 --max-time 10 ifconfig.me)
+        if [[ -n "$public_ipv6" ]]; then
+            public_ipv6_raw="$public_ipv6"
+            public_ipv6="[${public_ipv6}]"
+        else
+            public_ipv6_raw="YOUR_SERVER_IPV6"
+            public_ipv6="[YOUR_SERVER_IPV6]"
+            echo -e "${Yellow}无法自动获取公网 IPv6，客户端配置中将使用占位地址 [YOUR_SERVER_IPV6]。${NC}"
+            sleep 1
+        fi
+    fi
+
+    case "$ip_stack" in
+        ipv6)
+            proxy_host="$public_ipv6"
+            ;;
+        ipv4+ipv6)
+            proxy_host="YOUR_SERVER_DOMAIN"
+            ;;
+        *)
+            proxy_host="$public_ipv4"
+            ;;
+    esac
+
+    final_config_string="${AGENT_NAME} = snell, ${proxy_host}, ${SNELL_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true"
+    if [[ "$ip_stack" == "ipv4+ipv6" ]]; then
+        echo -e "${Yellow}IPv4+IPv6 单节点需要使用同时解析到 A 和 AAAA 记录的域名，请将 YOUR_SERVER_DOMAIN 替换为您的域名。${NC}"
         sleep 1
     fi
-    local final_config_string="${AGENT_NAME} = snell, ${public_ip}, ${SNELL_PORT}, psk=${SNELL_PSK}, version=${snell_major_version}, reuse=true, tfo=true, ecn=true"
     if [[ "$snell_major_version" == "6" ]]; then
         final_config_string="${final_config_string}, mode=${SNELL_MODE:-default}"
     fi
@@ -848,6 +870,11 @@ view_config() {
     echo -e "${Green}================== 实例 ${SNELL_SERVICE_NAME} 配置 ==================${NC}"
     echo -e "${Yellow}请复制以下完整的客户端配置信息：${NC}\n"
     echo "${final_config_string}"
+    if [[ "$ip_stack" == "ipv4+ipv6" ]]; then
+        echo -e "\n${Yellow}双栈 DNS 记录建议：${NC}"
+        echo "A    YOUR_SERVER_DOMAIN -> ${public_ipv4}"
+        echo "AAAA YOUR_SERVER_DOMAIN -> ${public_ipv6_raw}"
+    fi
     echo -e "\n${Green}==================================================================${NC}"
     press_any_key
 }
