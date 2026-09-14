@@ -1,6 +1,13 @@
 # NAME: emby分流-直连
 # lily直连
 DOMAIN,cdn.lilyemby.com
+DOMAIN,video.lilyemby.cc
+DOMAIN,hk1-cdn.lilyemby.app 
+DOMAIN,hk2-cdn.lilyemby.app
+DOMAIN,hk3-cdn.lilyemby.app
+DOMAIN,sg-cdn.lilyemby.app 
+DOMAIN,eu-cdn.lilyemby.app 
+DOMAIN,us-cdn.lilyemby.app
 
 # 自建直连
 DOMAIN,emby.janine.cn
