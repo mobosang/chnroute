@@ -2,6 +2,14 @@
 DOMAIN,www.lilyemby.com
 DOMAIN,emby.oceancloud.asia
 
+# NAME: lily分流-代理
+DOMAIN,hk1-stream.lilyemby.app 
+DOMAIN,hk2-stream.lilyemby.app 
+DOMAIN,hk3-stream.lilyemby.app 
+DOMAIN,sg-stream.lilyemby.app 
+DOMAIN,eu-stream.lilyemby.app 
+DOMAIN,us-stream.lilyemby.app
+
 # CF long 非直连线路
 DOMAIN,cfcdn.longemby.com
 DOMAIN,stream-phoenix.longemby.live
