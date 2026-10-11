@@ -8,6 +8,14 @@ DOMAIN,hk3-cdn.lilyemby.app
 DOMAIN,sg-cdn.lilyemby.app 
 DOMAIN,eu-cdn.lilyemby.app 
 DOMAIN,us-cdn.lilyemby.app
+DOMAIN,x5.lilyemby.cc
+DOMAIN,x14.lilyemby.cc
+DOMAIN,x8.lilyemby.cc
+DOMAIN,x9.lilyemby.cc
+DOMAIN,x10.lilyemby.cc
+DOMAIN,x17.lilyemby.cc
+DOMAIN,x4.lilyemby.cc
+DOMAIN,x21.lilyemby.cc
 
 # 自建直连
 DOMAIN,emby.janine.cn
