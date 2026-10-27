@@ -293,8 +293,64 @@ test_listen_profiles() {
     [[ $(get_version_listen_value v5.0.0 80 ipv4+ipv6) == '[::]:80' ]]
     [[ $(get_version_listen_value v6.0.0 80 ipv4+ipv6) == '0.0.0.0:80, [::]:80' ]]
 }
+test_script_revision_url() (
+    curl() { printf '  "sha": "1111111111111111111111111111111111111111",\n'; }
+    [[ $(get_latest_script_url) == 'https://raw.githubusercontent.com/mobosang/chnroute/1111111111111111111111111111111111111111/snell-ai.sh' ]]
+    curl() { echo 'rate limited'; }
+    if get_latest_script_url; then return 1; fi
+)
+run_update_fixture() {
+    bash -c '
+        source <(sed '\''$d'\'' "$1")
+        SCRIPT_VERSION="$2"; offered="$3"; log="$4"
+        clear() { :; }; sleep() { :; }; press_any_key() { :; }; cleanup_ui() { :; }
+        exec() { echo RESTART >> "$log"; }
+        curl() {
+            printf "%s\n" "$*" >> "$log"
+            case "$*" in
+                *api.github.com*) printf '\''  "sha": "1111111111111111111111111111111111111111",\n'\'' ;;
+                *)
+                    local output
+                    while [[ $# -gt 0 ]]; do
+                        if [[ "$1" == -o ]]; then output="$2"; break; fi
+                        shift
+                    done
+                    cat "$offered" > "$output"
+                    ;;
+            esac
+        }
+        update_script
+    ' "$test_dir/installed-script" "$root/snell-ai.sh" "$1" "$test_dir/offered-script" "$test_dir/update-actions"
+}
+test_self_update_pinned_snapshot() {
+    echo original > "$test_dir/installed-script"
+    cp "$root/snell-ai.sh" "$test_dir/offered-script"
+    : > "$test_dir/update-actions"
+    run_update_fixture 3.5.9
+    cmp "$test_dir/installed-script" "$test_dir/offered-script"
+    [[ $(grep -c 'raw.githubusercontent.com' "$test_dir/update-actions") == 1 ]]
+    ! grep -q '/main/snell-ai.sh' "$test_dir/update-actions"
+    grep -qx RESTART "$test_dir/update-actions"
+    [[ -x "$test_dir/installed-script" ]]
+}
+test_self_update_invalid_snapshot() {
+    echo original > "$test_dir/installed-script"
+    printf 'SCRIPT_VERSION="99.0.0"\nmain "$@"\nif broken\n' > "$test_dir/offered-script"
+    : > "$test_dir/update-actions"
+    if run_update_fixture 3.5.9; then return 1; fi
+    [[ $(cat "$test_dir/installed-script") == original ]]
+    ! grep -qx RESTART "$test_dir/update-actions"
+}
+test_self_update_already_current() {
+    cp "$root/snell-ai.sh" "$test_dir/installed-script"
+    cp "$root/snell-ai.sh" "$test_dir/offered-script"
+    : > "$test_dir/update-actions"
+    run_update_fixture "$SCRIPT_VERSION"
+    cmp "$test_dir/installed-script" "$test_dir/offered-script"
+    ! grep -qx RESTART "$test_dir/update-actions"
+}
 passed=0
-for test in test_ports test_collision test_download_failure test_mode test_restart_failure test_inactive_recovery test_downgrade test_migration_failure test_upgrade_from_v5 test_recovery_failure_retains_backup test_view_selection test_menu test_release_catalog test_release_fetch_failure test_release_parse_failure test_architecture_urls test_version_profiles test_v3_rollback test_new_version_install test_invalid_version_choice test_unavailable_package test_incompatible_binary test_listen_profiles; do
+for test in test_ports test_collision test_download_failure test_mode test_restart_failure test_inactive_recovery test_downgrade test_migration_failure test_upgrade_from_v5 test_recovery_failure_retains_backup test_view_selection test_menu test_release_catalog test_release_fetch_failure test_release_parse_failure test_architecture_urls test_version_profiles test_v3_rollback test_new_version_install test_invalid_version_choice test_unavailable_package test_incompatible_binary test_listen_profiles test_script_revision_url test_self_update_pinned_snapshot test_self_update_invalid_snapshot test_self_update_already_current; do
     # 不将测试函数放进 if，避免 Bash 禁用函数内的 errexit。
     ( "$test" ) > "$test_dir/test-output" 2>&1
     printf 'PASS %s\n' "$test"

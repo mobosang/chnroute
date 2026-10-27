@@ -3,6 +3,10 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.11:
+# - 修复: 自更新通过最新提交号下载，避开 Raw 分支地址缓存。
+# - 修复: 版本检测与更新使用同一份已验证脚本，替换失败时保留原文件。
+#
 # v3.5.10:
 # - 修复: 所有文字样式显式指定黑色背景，避免浅色终端出现白色色块。
 # - 调整: 提高正文亮度，清屏前先设置控制台底色。
@@ -56,7 +60,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.10"
+SCRIPT_VERSION="3.5.11"
 SNELL_VERSION_FOR_INSTALL="v5.0.1" # 官网版本获取失败时的默认稳定版本
 SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
@@ -75,6 +79,7 @@ FIRST_RUN_MARKER_FILE="${USAGE_CONFIG_DIR}/.install_reported" # 首次运行报�
 # --- 下载链接 ---
 SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 SCRIPT_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-ai.sh"
+SCRIPT_REF_API_URL="https://api.github.com/repos/mobosang/chnroute/git/ref/heads/main"
 SNELL_V3_SPECIAL_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-server-v3.0.1-linux-amd64.zip"
 SNELL_V3_SPECIAL_ARM64_URL="https://raw.githubusercontent.com/mobosang/chnroute/main/snell-server-v3.0.1-linux-arm64.zip"
 # 【【【 重要配置 】】】 请将下面的 URL 替换为您自己的服务器端点
@@ -1166,18 +1171,50 @@ view_log() {
     clear; echo -e "加载 Snell 日志... ${Yellow}(按 'q' 键退出)${NC}"; sleep 1; journalctl -e -u "$SNELL_SERVICE_NAME" -f
 }
 
+get_latest_script_url() {
+    local metadata revision
+    metadata=$(curl -fsSL --connect-timeout 10 --max-time 30 \
+        -H 'Cache-Control: no-cache' \
+        "${SCRIPT_REF_API_URL}?check=$(date +%s)") || return 1
+    revision=$(printf '%s\n' "$metadata" | sed -n 's/^[[:space:]]*"sha":[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' | head -n 1)
+    [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || return 1
+    printf '%s/%s/snell-ai.sh\n' "${SCRIPT_URL%/main/snell-ai.sh}" "$revision"
+}
+
 update_script() {
-    clear; echo "正在检查更新..."; local local_version=$SCRIPT_VERSION
-    local remote_version; remote_version=$(curl -fsSL --connect-timeout 10 --max-time 30 "${SCRIPT_URL}" | grep 'SCRIPT_VERSION=' | head -n 1 | awk -F'"' '{print $2}')
-    if [[ -z "$remote_version" ]]; then echo -e "${Red}获取远程版本信息失败。${NC}"; press_any_key; return; fi
-    local latest_version; latest_version=$(printf "%s\n%s" "$local_version" "$remote_version" | sort -V | tail -n 1)
-    if [[ "$latest_version" == "$local_version" ]]; then echo -e "${Green}恭喜！当前已是最新版本 (${local_version})。${NC}"; else
-        echo -e "${Yellow}发现新版本: ${remote_version}，正在更新...${NC}"; local script_path="$0"; local temp_script; temp_script=$(mktemp)
-        if ! curl -fsSL --connect-timeout 10 --max-time 30 "${SCRIPT_URL}" -o "$temp_script"; then echo -e "${Red}下载新脚本失败！${NC}"; rm -f "$temp_script"; press_any_key; return; fi
-        if ! grep -q '^SCRIPT_VERSION=' "$temp_script" || ! grep -q '^main "\$@"' "$temp_script"; then echo -e "${Red}下载的新脚本内容校验失败，已取消更新。${NC}"; rm -f "$temp_script"; press_any_key; return; fi
-        mv "$temp_script" "${script_path}"
-        chmod +x "${script_path}"; echo -e "${Green}脚本已更新至 ${remote_version}！正在重新运行...${NC}"; sleep 2; cleanup_ui; exec "${script_path}"
-    fi; press_any_key
+    clear; echo "正在检查更新..."
+    local script_path update_url temp_script remote_version latest_version
+    script_path=$(realpath "$0") || return 1
+    if ! update_url=$(get_latest_script_url); then
+        echo -e "${Red}无法获取最新提交信息，请稍后重试。${NC}"
+        press_any_key; return 1
+    fi
+    # 使用固定提交地址只下载一次，版本检查与实际安装使用同一份内容。
+    temp_script=$(mktemp "${script_path}.update.XXXXXX") || return 1
+    if ! curl -fsSL --connect-timeout 10 --max-time 30 "$update_url" -o "$temp_script"; then
+        echo -e "${Red}下载新脚本失败！${NC}"
+        rm -f "$temp_script"; press_any_key; return 1
+    fi
+    remote_version=$(sed -n 's/^SCRIPT_VERSION="\([0-9][0-9.]*\)"$/\1/p' "$temp_script" | head -n 1)
+    if [[ ! "$remote_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+       ! grep -q '^main "\$@"' "$temp_script" || ! bash -n "$temp_script"; then
+        echo -e "${Red}下载的新脚本内容校验失败，已取消更新。${NC}"
+        rm -f "$temp_script"; press_any_key; return 1
+    fi
+    latest_version=$(printf '%s\n%s\n' "$SCRIPT_VERSION" "$remote_version" | sort -V | tail -n 1)
+    if [[ "$latest_version" == "$SCRIPT_VERSION" ]]; then
+        rm -f "$temp_script"
+        echo -e "${Green}当前已是最新版本 (${SCRIPT_VERSION})。${NC}"
+        press_any_key; return 0
+    fi
+    if ! chmod --reference="$script_path" "$temp_script" || ! chmod u+x "$temp_script" ||
+       ! mv "$temp_script" "$script_path"; then
+        echo -e "${Red}替换脚本失败，原脚本未更新。${NC}"
+        rm -f "$temp_script"; press_any_key; return 1
+    fi
+    echo -e "${Green}脚本已更新至 ${remote_version}！正在重新运行...${NC}"
+    sleep 2; cleanup_ui
+    exec "$script_path"
 }
 
 show_menu() {
