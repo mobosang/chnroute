@@ -3,6 +3,11 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.8:
+# - 修复: 实例编号冲突、版本切换配置迁移及失败恢复。
+# - 修复: 实例选择、重启结果及十进制端口校验。
+# - 调整: 使用 00 退出脚本。
+#
 # v3.5.7:
 # - 修复: IPv4+IPv6 配置完成后输出单条双栈客户端节点信息。
 #
@@ -42,7 +47,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.7"
+SCRIPT_VERSION="3.5.8"
 SNELL_VERSION_FOR_INSTALL="v5.0.1" # 官网版本获取失败时的默认稳定版本
 SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
@@ -79,6 +84,9 @@ total_usage_count=0 # 总计使用次数
 today_usage_count=0 # 本日使用次数
 latest_snell_version_cache=""
 latest_snell_v6_version_cache=""
+CHANGE_DIR=""
+CHANGE_PATHS=()
+CHANGE_WAS_RUNNING=false
 
 # --- 工具函数 ---
 press_any_key() {
@@ -125,7 +133,7 @@ load_manager_config() {
 
 validate_port() {
     local port="$1"
-    [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535))
 }
 
 validate_ip_stack() {
@@ -193,6 +201,103 @@ download_snell_binary() {
 is_safe_instance_path() {
     local path="$1"
     [[ -n "$path" && "$path" =~ ^/etc/snell(-[0-9]+)?$ ]]
+}
+
+# 先下载、备份，再停服替换；事务仅覆盖当前实例的四个文件。
+prepare_instance_change() {
+    local download_url="$1" path i=0
+    mkdir -p "$SNELL_INSTALL_DIR" || return 1
+    CHANGE_DIR=$(mktemp -d "${SNELL_INSTALL_DIR}/.snell-change.XXXXXX") || return 1
+    CHANGE_PATHS=("${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}" "$SNELL_CONFIG_FILE" "$SCRIPT_CONFIG_FILE" "$SNELL_SERVICE_FILE")
+    if ! download_snell_binary "$download_url" "$CHANGE_DIR/new-binary" ||
+        ! chmod +x "$CHANGE_DIR/new-binary"; then
+        rm -rf "$CHANGE_DIR"
+        return 1
+    fi
+    for path in "${CHANGE_PATHS[@]}"; do
+        if [[ -e "$path" ]]; then
+            if ! cp -p "$path" "$CHANGE_DIR/backup-$i"; then
+                rm -rf "$CHANGE_DIR"
+                return 1
+            fi
+        fi
+        i=$((i + 1))
+    done
+    CHANGE_WAS_RUNNING=false
+    if systemctl is-active --quiet "$SNELL_SERVICE_NAME"; then
+        CHANGE_WAS_RUNNING=true
+    fi
+    if [[ -f "$SNELL_SERVICE_FILE" ]] && ! systemctl stop "$SNELL_SERVICE_NAME"; then
+        rm -rf "$CHANGE_DIR"
+        return 1
+    fi
+    if ! mv "$CHANGE_DIR/new-binary" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; then
+        rollback_instance_change
+        return 1
+    fi
+}
+
+rollback_instance_change() {
+    local path i=0 failed=false
+    systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1
+    for path in "${CHANGE_PATHS[@]}"; do
+        if [[ -e "$CHANGE_DIR/backup-$i" ]]; then
+            cp -p "$CHANGE_DIR/backup-$i" "$path" || failed=true
+        else
+            rm -f "$path" || failed=true
+        fi
+        i=$((i + 1))
+    done
+    systemctl daemon-reload || failed=true
+    if [[ "$CHANGE_WAS_RUNNING" == true ]]; then
+        systemctl start "$SNELL_SERVICE_NAME" || failed=true
+        sleep 1
+        systemctl is-active --quiet "$SNELL_SERVICE_NAME" || failed=true
+    fi
+    if [[ "$failed" == true ]]; then
+        echo -e "${Red}自动恢复失败，请检查服务；原文件备份保留在 ${CHANGE_DIR}${NC}"
+        return 1
+    fi
+    rm -rf "$CHANGE_DIR"
+    echo -e "${Yellow}已恢复此实例原有文件及运行状态。${NC}"
+}
+
+finish_instance_change() {
+    if ! do_restart; then
+        rollback_instance_change
+        return 1
+    fi
+    rm -rf "$CHANGE_DIR"
+}
+
+migrate_version_config() {
+    local target_version="$1" effective_mode listen_address
+    validate_port "$SNELL_PORT" || return 1
+    local port=$((10#$SNELL_PORT)) ip_stack=${SNELL_IP_STACK:-ipv4}
+    validate_ip_stack "$ip_stack" || return 1
+    listen_address="$(get_snell_listen_address "$ip_stack"):$port"
+    if [[ "$target_version" == v6* && "$ip_stack" == ipv4+ipv6 ]]; then
+        listen_address="0.0.0.0:$port, [::]:$port"
+    fi
+    sed -i "s/^listen = .*/listen = ${listen_address}/" "$SNELL_CONFIG_FILE" || return 1
+    # 服务端当前配置是实际生效值，管理配置必须与其保持一致。
+    effective_mode=$(sed -n 's/^[[:space:]]*mode[[:space:]]*=[[:space:]]*//p' "$SNELL_CONFIG_FILE" | head -n 1)
+    effective_mode=${effective_mode%$'\r'}
+    effective_mode=${effective_mode%%[[:space:]#;]*}
+    effective_mode=${effective_mode:-default}
+    if [[ "$target_version" == v6* ]]; then
+        [[ "$effective_mode" =~ ^(default|unshaped|unsafe-raw)$ ]] || return 1
+    else
+        effective_mode=default
+    fi
+    sed -i '/^[[:space:]]*mode[[:space:]]*=/d' "$SNELL_CONFIG_FILE" || return 1
+    if [[ "$target_version" == v6* ]]; then
+        echo "mode = $effective_mode" >> "$SNELL_CONFIG_FILE" || return 1
+    fi
+    sed -i '/^SNELL_MODE=/d' "$SCRIPT_CONFIG_FILE" || return 1
+    echo "SNELL_MODE=\"$effective_mode\"" >> "$SCRIPT_CONFIG_FILE" || return 1
+    sed -i -e "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${target_version}\"/" \
+        -e 's/^IS_V3_SPECIAL=.*/IS_V3_SPECIAL=false/' "$SCRIPT_CONFIG_FILE"
 }
 
 report_first_run() {
@@ -460,7 +565,13 @@ _install_or_modify_logic() {
         
         if [[ -n "$existing_services" ]]; then
             local count; count=$(echo "$existing_services" | wc -l)
-            local next_instance_num=$((count + 1))
+            local next_instance_num=2
+            while [[ -e "/etc/systemd/system/snell-${next_instance_num}.service" ||
+                     -e "/etc/snell-${next_instance_num}" ||
+                     -e "${SNELL_INSTALL_DIR}/snell-server-${next_instance_num}" ]] ||
+                  grep -Fxq "snell-${next_instance_num}.service" <<< "$existing_services"; do
+                next_instance_num=$((next_instance_num + 1))
+            done
 
             local choice; choice=$(dialog --clear --backtitle "安装检测" --title "检测到现有 Snell 服务" \
                 --menu "系统上已存在 ${count} 个 Snell 服务实例。\n请选择您的操作:" 15 70 2 \
@@ -515,6 +626,7 @@ _install_or_modify_logic() {
         dialog --title "错误" --msgbox "Snell 端口必须是 1-65535 之间的数字。" 8 60
         return 1
     fi
+    SNELL_PORT=$((10#$SNELL_PORT))
     if ! validate_ip_stack "$SNELL_IP_STACK"; then
         dialog --title "错误" --msgbox "IP 栈只能是: ipv4、ipv6、ipv4+ipv6。" 8 60
         return 1
@@ -524,17 +636,29 @@ _install_or_modify_logic() {
         return 1
     fi
     
-    clear; echo "开始准备环境 (实例: ${SNELL_SERVICE_NAME})..."; if [[ -f "$SNELL_SERVICE_FILE" ]]; then systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1; fi
-    mkdir -p "$SNELL_INSTALL_DIR" "$SNELL_CONFIG_DIR"
-
-    echo "正在下载 Snell Server (${install_version})..."
-    if ! download_snell_binary "$download_url" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; then
-        dialog --title "错误" --msgbox "Snell Server 下载或解压失败！\n请检查网络和下载地址。" 10 70
+    if [[ "$mode" == new && "${choice:-}" == coexist ]] &&
+       [[ -e "$SNELL_SERVICE_FILE" || -e "$SNELL_CONFIG_DIR" || -e "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}" ]]; then
+        echo "实例路径已被占用，取消共存安装，请重新选择。"
         return 1
     fi
-    chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; echo -e "${Green}Snell Server 二进制文件 (${SNELL_BINARY_NAME}) 准备就绪。${NC}"
+    clear; echo "开始准备环境 (实例: ${SNELL_SERVICE_NAME})..."
 
-    echo "正在写入配置文件..."; local SNELL_PSK=$(openssl rand -base64 18); local listen_address; local extra_listen_address; local ipv6_enabled;
+    echo "正在下载 Snell Server (${install_version})..."
+    if ! prepare_instance_change "$download_url"; then
+        dialog --title "错误" --msgbox "Snell Server 下载、备份或替换失败！\n请检查网络、下载地址和文件权限。" 10 70
+        return 1
+    fi
+    if ! mkdir -p "$SNELL_CONFIG_DIR"; then
+        rollback_instance_change
+        return 1
+    fi
+    echo -e "${Green}Snell Server 二进制文件 (${SNELL_BINARY_NAME}) 准备就绪。${NC}"
+
+    echo "正在写入配置文件..."; local SNELL_PSK; local listen_address; local extra_listen_address; local ipv6_enabled;
+    if ! SNELL_PSK=$(openssl rand -base64 18) || [[ -z "$SNELL_PSK" ]]; then
+        rollback_instance_change
+        return 1
+    fi
     listen_address=$(get_snell_listen_address "$SNELL_IP_STACK")
     extra_listen_address=$(get_snell_extra_listen_address "$SNELL_IP_STACK")
     ipv6_enabled=$(get_snell_ipv6_enabled "$SNELL_IP_STACK")
@@ -542,7 +666,7 @@ _install_or_modify_logic() {
         listen_address="0.0.0.0"
     fi
     
-    cat > "$SNELL_CONFIG_FILE" << EOF
+    cat > "$SNELL_CONFIG_FILE" << EOF || { rollback_instance_change; return 1; }
 [snell-server]
 dns = 1.1.1.1, 9.9.9.9
 psk = ${SNELL_PSK}
@@ -550,17 +674,17 @@ ipv6 = ${ipv6_enabled}
 EOF
 
     if [[ "$is_v6" == "true" && -n "$extra_listen_address" ]]; then
-        sed -i "/^dns = /a listen = ${listen_address}:${SNELL_PORT}, ${extra_listen_address}:${SNELL_PORT}" "$SNELL_CONFIG_FILE"
+        sed -i "/^dns = /a listen = ${listen_address}:${SNELL_PORT}, ${extra_listen_address}:${SNELL_PORT}" "$SNELL_CONFIG_FILE" || { rollback_instance_change; return 1; }
     else
-        sed -i "/^dns = /a listen = ${listen_address}:${SNELL_PORT}" "$SNELL_CONFIG_FILE"
+        sed -i "/^dns = /a listen = ${listen_address}:${SNELL_PORT}" "$SNELL_CONFIG_FILE" || { rollback_instance_change; return 1; }
     fi
 
     if [[ "$is_v6" == "true" ]]; then
-        echo "mode = ${SNELL_MODE}" >> "$SNELL_CONFIG_FILE"
+        echo "mode = ${SNELL_MODE}" >> "$SNELL_CONFIG_FILE" || { rollback_instance_change; return 1; }
     fi
 
     local service_user_line="DynamicUser=yes"; local snell_user="snell${instance_suffix}"; if [[ -f /etc/os-release ]]; then source /etc/os-release; if [[ "$ID" == "centos" && "$VERSION_ID" == "7" ]]; then echo "检测到 CentOS 7，使用静态用户 '${snell_user}'。"; if ! id "${snell_user}" &>/dev/null; then useradd -r -s /bin/false "${snell_user}"; fi; service_user_line="User=${snell_user}"; fi; fi
-    cat > "$SNELL_SERVICE_FILE" << EOF
+    cat > "$SNELL_SERVICE_FILE" << EOF || { rollback_instance_change; return 1; }
 [Unit]
 Description=Snell Proxy Service (${SNELL_SERVICE_NAME})
 After=network-online.target
@@ -575,7 +699,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
     
-    cat > "$SCRIPT_CONFIG_FILE" << EOF
+    cat > "$SCRIPT_CONFIG_FILE" << EOF || { rollback_instance_change; return 1; }
 AGENT_NAME="${AGENT_NAME}"
 SNELL_PORT="${SNELL_PORT}"
 SNELL_PSK="${SNELL_PSK}"
@@ -595,9 +719,17 @@ net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_ecn = 1
 EOF
     sysctl -p >/dev/null
-    systemctl daemon-reload; systemctl enable "$SNELL_SERVICE_NAME" >/dev/null 2>&1
+    if ! systemctl daemon-reload; then
+        rollback_instance_change
+        return 1
+    fi
     open_firewall_ports "$SNELL_PORT"
-    do_restart; clear
+    if ! finish_instance_change; then
+        press_any_key
+        return 1
+    fi
+    systemctl enable "$SNELL_SERVICE_NAME" >/dev/null 2>&1
+    clear
     echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 安装/配置成功完成！${NC}"
     
     # 仅在全新安装时设置别名和报告
@@ -605,7 +737,7 @@ EOF
         setup_alias
     fi
 
-    view_config
+    view_config current
 }
 
 do_install_latest() {
@@ -662,27 +794,17 @@ do_update_snell() {
     dialog --title "发现新版本" --yesno "发现新版本 ${remote_version}。\n是否要为实例 ${SNELL_SERVICE_NAME} 更新？" 10 60
     if [[ $? -ne 0 ]]; then return; fi
     
-    clear; echo "准备更新..."; systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1
-    echo "下载新版本 Snell Server (${remote_version})..."
+    clear; echo "准备更新..."
     local NEW_SNELL_URL="https://dl.nssurge.com/snell/snell-server-${remote_version}-linux-amd64.zip"
-    if ! download_snell_binary "$NEW_SNELL_URL" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; then echo "下载或解压失败"; press_any_key; return; fi
-
-    chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
-    sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${remote_version}\"/" "$SCRIPT_CONFIG_FILE"
-    sed -i "s/^IS_V3_SPECIAL=.*/IS_V3_SPECIAL=false/" "$SCRIPT_CONFIG_FILE"
-    if [[ "$remote_version" == v6* ]]; then
-        if grep -q '^SNELL_MODE=' "$SCRIPT_CONFIG_FILE"; then
-            sed -i 's/^SNELL_MODE=.*/SNELL_MODE="default"/' "$SCRIPT_CONFIG_FILE"
-        else
-            echo 'SNELL_MODE="default"' >> "$SCRIPT_CONFIG_FILE"
-        fi
-        if ! grep -q '^mode = ' "$SNELL_CONFIG_FILE"; then
-            echo "mode = default" >> "$SNELL_CONFIG_FILE"
-        fi
-    else
-        sed -i '/^mode = /d' "$SNELL_CONFIG_FILE"
+    if ! prepare_instance_change "$NEW_SNELL_URL"; then
+        echo "下载、备份或替换失败"; press_any_key; return 1
     fi
-    echo "重启服务..."; do_restart
+    if ! migrate_version_config "$remote_version"; then
+        echo "配置迁移失败"
+        rollback_instance_change
+        press_any_key; return 1
+    fi
+    if ! finish_instance_change; then press_any_key; return 1; fi
     echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 已成功更新至 ${remote_version}！${NC}"; press_any_key
 }
 
@@ -706,26 +828,17 @@ do_rollback_snell() {
     dialog --title "确认更换" --yesno "确定要将实例 ${SNELL_SERVICE_NAME} 更换到 ${selected_version} 吗？" 10 60
     if [[ $? -ne 0 ]]; then return; fi
 
-    clear; echo "准备更换..."; systemctl stop "$SNELL_SERVICE_NAME" >/dev/null 2>&1
+    clear; echo "准备更换..."
     local ROLLBACK_URL="https://dl.nssurge.com/snell/snell-server-${selected_version}-linux-amd64.zip"
-    if ! download_snell_binary "$ROLLBACK_URL" "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"; then echo "下载或解压失败"; press_any_key; return; fi
-    
-    chmod +x "${SNELL_INSTALL_DIR}/${SNELL_BINARY_NAME}"
-    sed -i "s/^SNELL_VERSION_INSTALLED=.*/SNELL_VERSION_INSTALLED=\"${selected_version}\"/" "$SCRIPT_CONFIG_FILE"
-    sed -i "s/^IS_V3_SPECIAL=.*/IS_V3_SPECIAL=false/" "$SCRIPT_CONFIG_FILE"
-    if [[ "$selected_version" == v6* ]]; then
-        if grep -q '^SNELL_MODE=' "$SCRIPT_CONFIG_FILE"; then
-            sed -i 's/^SNELL_MODE=.*/SNELL_MODE="default"/' "$SCRIPT_CONFIG_FILE"
-        else
-            echo 'SNELL_MODE="default"' >> "$SCRIPT_CONFIG_FILE"
-        fi
-        if ! grep -q '^mode = ' "$SNELL_CONFIG_FILE"; then
-            echo "mode = default" >> "$SNELL_CONFIG_FILE"
-        fi
-    else
-        sed -i '/^mode = /d' "$SNELL_CONFIG_FILE"
+    if ! prepare_instance_change "$ROLLBACK_URL"; then
+        echo "下载、备份或替换失败"; press_any_key; return 1
     fi
-    echo "重启服务..."; do_restart
+    if ! migrate_version_config "$selected_version"; then
+        echo "配置迁移失败"
+        rollback_instance_change
+        press_any_key; return 1
+    fi
+    if ! finish_instance_change; then press_any_key; return 1; fi
     echo -e "${Green}实例 ${SNELL_SERVICE_NAME} 已成功更换至 ${selected_version}！${NC}"; press_any_key
 }
 
@@ -795,17 +908,23 @@ do_stop() {
 }
 
 do_restart() {
-    # This can be called without a menu
-    if [[ -z "$SNELL_SERVICE_NAME" ]]; then
-        if ! select_snell_instance "重启 Snell 服务"; then return; fi
+    [[ -n "$SNELL_SERVICE_NAME" ]] || return 1
+    echo "正在重启服务 ${SNELL_SERVICE_NAME}..."
+    if ! systemctl restart "$SNELL_SERVICE_NAME"; then
+        echo -e "${Red}重启失败。${NC}"
+        return 1
     fi
-    echo "正在重启服务 ${SNELL_SERVICE_NAME}..."; systemctl restart "$SNELL_SERVICE_NAME"
     sleep 1
-    if systemctl is-active --quiet "$SNELL_SERVICE_NAME"; then echo -e "${Green}重启成功！${NC}"; else echo -e "${Red}重启失败。${NC}"; fi
+    if systemctl is-active --quiet "$SNELL_SERVICE_NAME"; then
+        echo -e "${Green}重启成功！${NC}"
+        return 0
+    fi
+    echo -e "${Red}重启失败。${NC}"
+    return 1
 }
 
 view_config() {
-    if [[ -z "$SNELL_SERVICE_NAME" ]] && ! select_snell_instance "查看配置信息"; then return; fi
+    if [[ "${1:-}" != current ]] && ! select_snell_instance "查看配置信息"; then return 1; fi
 
     if [[ ! -f "$SCRIPT_CONFIG_FILE" ]]; then
         dialog --title "错误" --msgbox "找不到实例 ${SNELL_SERVICE_NAME} 的管理配置文件。" 8 60
@@ -924,7 +1043,7 @@ show_menu() {
     echo -e "${Green}11.${NC} 查看一个实例的配置"
     echo -e "${Green}12.${NC} 查看一个实例的日志"
     echo -e "-------------------------------------------------"
-    echo -e "${Green}13.${NC} 退出脚本"
+    echo -e "${Green}00.${NC} 退出脚本"
     echo -e "================================================="
     echo -e "当前已安装实例数量: ${Green}${instance_count}${NC}"
     echo -e "总计使用: ${Yellow}${total_usage_count}${NC} 次 | 本日使用: ${Yellow}${today_usage_count}${NC} 次"
@@ -938,7 +1057,7 @@ main() {
     update_usage_stats
     while true; do
         show_menu
-        read -p "请输入数字 [0-13]: " choice
+        read -r -p "请输入操作编号 [0-12，00 退出]: " choice || return 0
         case "$choice" in
             0) update_script ;; 
             1) do_install_latest ;; 
@@ -949,11 +1068,11 @@ main() {
             6) do_uninstall_menu ;;
             7) do_start ;;
             8) do_stop ;;
-            9) do_restart; press_any_key ;;
+            9) if select_snell_instance "重启 Snell 服务"; then do_restart; press_any_key; fi ;;
             10) do_modify_config ;;
             11) view_config ;;
             12) view_log ;;
-            13) exit 0 ;;
+            00) exit 0 ;;
             *) echo -e "${Red}无效输入。${NC}"; sleep 1 ;;
         esac
     done
