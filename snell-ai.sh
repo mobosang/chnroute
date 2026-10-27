@@ -3,6 +3,10 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.10:
+# - 修复: 所有文字样式显式指定黑色背景，避免浅色终端出现白色色块。
+# - 调整: 提高正文亮度，清屏前先设置控制台底色。
+#
 # v3.5.9:
 # - 新增: 从官方发布标题提取全部版本，并加入仓库 v3.0.1 兼容版。
 # - 修复: 按架构选择下载包，按目标版本迁移 DNS、监听地址及 mode。
@@ -52,7 +56,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.9"
+SCRIPT_VERSION="3.5.10"
 SNELL_VERSION_FOR_INSTALL="v5.0.1" # 官网版本获取失败时的默认稳定版本
 SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
@@ -78,12 +82,13 @@ COUNTER_ENDPOINT_URL="http://your-server-domain.com/counter.php"
 
 
 # --- 颜色定义 ---
-Green="\033[1;32m"
-Red="\033[1;31m"
-Yellow="\033[1;33m"
-Cyan="\033[1;36m"
-Dim="\033[0;32m"
-NC="\033[0m"
+# 每个样式都同时设置前景与背景；SGR 0 会恢复用户终端的默认底色。
+Green="\033[0;1;32;40m"
+Red="\033[0;1;31;40m"
+Yellow="\033[0;1;33;40m"
+Cyan="\033[0;1;36;40m"
+Dim="\033[0;32;40m"
+NC="\033[0;97;40m"
 UI_THEME_FILE=""
 
 # --- 状态变量 ---
@@ -104,7 +109,6 @@ cleanup_ui() {
 
 setup_ui() {
     [[ -t 1 ]] || return 0
-    NC="\033[0;37;40m"
     UI_THEME_FILE=$(mktemp) || return 0
     cat > "$UI_THEME_FILE" <<'EOF'
 use_shadow = OFF
@@ -1177,6 +1181,7 @@ update_script() {
 }
 
 show_menu() {
+    printf '%b' "$NC"
     clear
     local instance_count=0 active_count=0 service_name services arch terminal_rows=32
     if [[ -t 1 ]]; then terminal_rows=$(tput lines 2>/dev/null) || terminal_rows=24; fi
