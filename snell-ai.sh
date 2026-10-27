@@ -3,6 +3,9 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.13:
+# - 修复: 退出时恢复终端默认颜色，并清除当前行及下方残留底色。
+#
 # v3.5.12:
 # - 修复: 正文使用兼容终端调色板的亮绿色，避免白色文字不可见。
 # - 调整: 菜单每行固定两项，使用等宽编号与六字功能名称对齐。
@@ -64,7 +67,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.12"
+SCRIPT_VERSION="3.5.13"
 SNELL_VERSION_FOR_INSTALL="v5.0.1" # 官网版本获取失败时的默认稳定版本
 SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
@@ -113,11 +116,13 @@ CHANGE_WAS_RUNNING=false
 # --- 工具函数 ---
 cleanup_ui() {
     [[ -z "$UI_THEME_FILE" ]] || rm -f "$UI_THEME_FILE"
-    if [[ -t 1 ]]; then printf '\033[0m'; fi
+    # 仅重置 SGR 不会重绘已填充的黑色空白；从当前行起以默认底色擦除。
+    if [[ -t 1 ]]; then printf '\033[0m\r\033[J'; fi
 }
 
 setup_ui() {
     [[ -t 1 ]] || return 0
+    trap cleanup_ui EXIT
     UI_THEME_FILE=$(mktemp) || return 0
     cat > "$UI_THEME_FILE" <<'EOF'
 use_shadow = OFF
@@ -154,7 +159,6 @@ uarrow_color = (GREEN,BLACK,ON)
 darrow_color = (GREEN,BLACK,ON)
 EOF
     export DIALOGRC="$UI_THEME_FILE"
-    trap cleanup_ui EXIT
 }
 
 press_any_key() {
