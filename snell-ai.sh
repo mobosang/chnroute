@@ -3,6 +3,10 @@
 # ==============================================================================
 # Snell Server 全功能管理脚本 (定制版-GOOGLE AI 生成)
 #
+# v3.5.12:
+# - 修复: 正文使用兼容终端调色板的亮绿色，避免白色文字不可见。
+# - 调整: 菜单每行固定两项，使用等宽编号与六字功能名称对齐。
+#
 # v3.5.11:
 # - 修复: 自更新通过最新提交号下载，避开 Raw 分支地址缓存。
 # - 修复: 版本检测与更新使用同一份已验证脚本，替换失败时保留原文件。
@@ -60,7 +64,7 @@
 # ==============================================================================
 
 # --- 全局变量和常量 ---
-SCRIPT_VERSION="3.5.11"
+SCRIPT_VERSION="3.5.12"
 SNELL_VERSION_FOR_INSTALL="v5.0.1" # 官网版本获取失败时的默认稳定版本
 SNELL_V6_VERSION_FOR_INSTALL="v6.0.0rc" # Snell v6 当前官方 RC 版本
 
@@ -93,7 +97,7 @@ Red="\033[0;1;31;40m"
 Yellow="\033[0;1;33;40m"
 Cyan="\033[0;1;36;40m"
 Dim="\033[0;32;40m"
-NC="\033[0;97;40m"
+NC="\033[0;1;32;40m"
 UI_THEME_FILE=""
 
 # --- 状态变量 ---
@@ -1217,6 +1221,13 @@ update_script() {
     exec "$script_path"
 }
 
+print_menu_row() {
+    # 功能名称统一为六个汉字；两位编号字段保证两列的终端显示宽度一致。
+    local left_color="${5:-$Green}" right_color="${6:-$Green}"
+    printf '   %b[%2s]%b %s          %b[%2s]%b %s\n' \
+        "$left_color" "$1" "$NC" "$2" "$right_color" "$3" "$NC" "$4"
+}
+
 show_menu() {
     printf '%b' "$NC"
     clear
@@ -1253,18 +1264,20 @@ EOF
     echo -e "${Dim}   ----------------------------------------------------------${NC}"
     echo -e "   ${Cyan}SYSTEM${NC} v${SCRIPT_VERSION}  ${Dim}//${NC} ${arch}  ${Dim}//${NC} ${Green}${active_count} ONLINE${NC} / ${instance_count} INSTANCES"
     echo -e "   ${Dim}SESSION${NC} 本日 ${today_usage_count} 次  ${Dim}//${NC} 累计 ${total_usage_count} 次"
+    echo -e "   ${Dim}RELEASE${NC} ${latest_snell_version_cache}  ${Dim}// V6${NC} ${latest_snell_v6_version_cache}  ${Dim}// COMPAT${NC} v3.0.1"
     echo
     echo -e "   ${Dim}[ 01 / DEPLOY ]${NC}"
-    echo -e "   ${Green}[1]${NC} 安装 Snell ${Cyan}${latest_snell_version_cache}${NC}    ${Green}[2]${NC} 安装 v6 ${Cyan}${latest_snell_v6_version_cache}${NC}"
-    echo -e "   ${Green}[3]${NC} 安装 v3.0.1 兼容版       ${Green}[5]${NC} 选择版本安装 / 更换版本"
-    echo -e "   ${Green}[4]${NC} 更新实例版本              ${Green}[0]${NC} 更新管理脚本"
+    print_menu_row 1 '安装最新版本' 2 '安装六代版本'
+    print_menu_row 3 '安装兼容版本' 4 '更新实例版本'
+    print_menu_row 5 '安装切换版本' 6 '卸载服务实例' "$Green" "$Red"
     echo
     echo -e "   ${Dim}[ 02 / OPERATE ]${NC}"
-    echo -e "   ${Green}[7]${NC} 启动实例   ${Yellow}[8]${NC} 停止实例   ${Cyan}[9]${NC} 重启实例"
-    echo -e "   ${Green}[10]${NC} 修改配置  ${Green}[11]${NC} 查看配置  ${Green}[12]${NC} 运行日志"
+    print_menu_row 7 '启动服务实例' 8 '停止服务实例' "$Green" "$Yellow"
+    print_menu_row 9 '重启服务实例' 10 '修改实例配置' "$Cyan" "$Green"
+    print_menu_row 11 '查看实例配置' 12 '查看运行日志'
     echo
     echo -e "   ${Dim}[ 03 / CONTROL ]${NC}"
-    echo -e "   ${Red}[6]${NC} 卸载实例                  ${Green}[00]${NC} 退出控制台"
+    print_menu_row 0 '更新管理脚本' 00 '退出管理脚本'
     echo -e "${Dim}   ----------------------------------------------------------${NC}"
     echo -e "   ${Dim}READY${NC} ${Green}输入操作编号后按 Enter${NC}\n"
 }
